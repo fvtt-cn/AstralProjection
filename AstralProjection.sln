@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.30310.162
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AstralProjection", "AstralProjection.csproj", "{443F679B-A21C-4444-B8BD-57830ECE5F2E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{443F679B-A21C-4444-B8BD-57830ECE5F2E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{443F679B-A21C-4444-B8BD-57830ECE5F2E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{443F679B-A21C-4444-B8BD-57830ECE5F2E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{443F679B-A21C-4444-B8BD-57830ECE5F2E}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {ED8B5D3D-A38B-4AEB-A58E-8F36E209860F}
+	EndGlobalSection
+EndGlobal
