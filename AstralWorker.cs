@@ -12,7 +12,6 @@ using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
 using System.Security;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -136,11 +135,14 @@ namespace AstralProjection
                     var newManifestJson = await client.GetStringAsync(manifestUrl);
                     var newManifest = JObject.Parse(newManifestJson);
 
-                    var regex = new Regex("^https://|^http://");
-                    var onlineManifestUrl = regex.Replace(manifestUrl, options.Prefix);
-                    var onlineDownloadUrl = string.Concat(onlineManifestUrl, ".zip");
-                    var uploadManifestLoc = regex.Replace(manifestUrl, "");
+                    // Truncate query string.
+                    var uploadManifestLoc = Uri.TryCreate(manifestUrl, UriKind.Absolute, out var uploadManifestUri)
+                        ? uploadManifestUri.GetComponents(UriComponents.Host | UriComponents.Port | UriComponents.Path, UriFormat.UriEscaped)
+                        : null;
                     var uploadDownloadLoc = string.Concat(uploadManifestLoc, ".zip");
+
+                    var onlineManifestUrl = string.Concat(options.Prefix, uploadManifestLoc);
+                    var onlineDownloadUrl = string.Concat(options.Prefix, uploadDownloadLoc);
 
                     if (!JToken.DeepEquals(json, newManifest))
                     {
