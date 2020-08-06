@@ -111,7 +111,7 @@ namespace AstralProjection
                     {
                         await ReadManifestAsync(file, httpClient, stoppingToken);
                     }
-                    catch (OperationCanceledException ex)
+                    catch (IOException ex)
                     {
                         logger.LogError(ex, "File path: {file}", file.FullName);
                     }
