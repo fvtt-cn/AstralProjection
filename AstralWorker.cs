@@ -232,7 +232,7 @@ namespace AstralProjection
             foreach (var entry in zip.Entries)
             {
                 // In the main folder.
-                if (entry.FullName.Count(c => c == '/') == 1 && (entry.Name.Equals("system.json") || entry.Name.Equals("module.json")))
+                if (entry.FullName.Count(c => c == '/') <= 1 && (entry.Name.Equals("system.json") || entry.Name.Equals("module.json")))
                 {
                     var manifestName = entry.FullName;
                     entry.Delete();
