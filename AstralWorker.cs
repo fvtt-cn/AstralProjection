@@ -115,6 +115,8 @@ namespace AstralProjection
                         logger.LogError(ex, "File path: {file}", file.FullName);
                     }
                 }
+
+                logger.LogInformation("Process completed.");
             }
         }
 
