@@ -68,6 +68,8 @@ namespace AstralProjection
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            await ProcessAsync(stoppingToken);
+
             do
             {
                 if (DateTime.Now > nextRunDate)
