@@ -21,11 +21,10 @@ namespace AstralProjection
     {
         private readonly CrontabSchedule schedule;
         private DateTime nextRunDate;
-        private readonly ILogger<AstralWorker> logger;
-
         private readonly IBlobStorage storage;
-
         private readonly AstralOptions options;
+
+        private readonly ILogger<AstralWorker> logger;
 
         // 12 hours to refresh.
         private const string SCHEDULE = "30 */12 * * *";
@@ -41,6 +40,8 @@ namespace AstralProjection
             logger = lgr;
 
             // Initialize.
+
+            // QCloud Specific.
             var allowActions = new string[] { "*" };
             var dict = new Dictionary<string, object>
             {
@@ -52,10 +53,10 @@ namespace AstralProjection
                 { "secretId", options.Id },
                 { "secretKey", options.Key }
             };
-
             var result = STSClient.genCredential(dict);
             var c = result["Credentials"] as JToken;
 
+            // S3.
             storage = StorageFactory.Blobs.AwsS3(
                 c.Value<string>("TmpSecretId"),
                 c.Value<string>("TmpSecretKey"),
@@ -93,6 +94,7 @@ namespace AstralProjection
         {
             if (!string.IsNullOrEmpty(options.Dir) && Directory.Exists(options.Dir))
             {
+                // All jsons.
                 var dir = new DirectoryInfo(options.Dir);
 
                 // Recursive.
@@ -131,76 +133,66 @@ namespace AstralProjection
                 var manifestUrl = json.Value<string>("manifest");
                 var downloadUrl = json.Value<string>("download");
 
-                if (!string.IsNullOrEmpty(manifestUrl) && !string.IsNullOrEmpty(downloadUrl))
+                if (string.IsNullOrEmpty(manifestUrl) || string.IsNullOrEmpty(downloadUrl))
                 {
-                    // Try to download new manifest url.
-                    var newManifestJson = await client.GetStringAsync(manifestUrl);
-                    var newManifest = JObject.Parse(newManifestJson);
+                    logger.LogError("Manifest is invalid: {file}", file.FullName);
+                    return;
+                }
 
-                    // Truncate query string.
-                    var uploadManifestLoc = Uri.TryCreate(manifestUrl, UriKind.Absolute, out var uploadManifestUri)
-                        ? uploadManifestUri.GetComponents(UriComponents.Host | UriComponents.Port | UriComponents.Path, UriFormat.UriEscaped)
-                        : null;
-                    var uploadDownloadLoc = string.Concat(uploadManifestLoc, ".zip");
+                // Try to download new manifest url.
+                var newManifestJson = await client.GetStringAsync(manifestUrl);
+                var newManifest = JObject.Parse(newManifestJson);
+                var newDownloadUrl = newManifest.Value<string>("download");
 
-                    var onlineManifestUrl = string.Concat(options.Prefix, uploadManifestLoc);
-                    var onlineDownloadUrl = string.Concat(options.Prefix, uploadDownloadLoc);
+                // Truncate query string.
+                var uploadManifestLoc = Uri.TryCreate(manifestUrl, UriKind.Absolute, out var uploadManifestUri)
+                    ? uploadManifestUri.GetComponents(UriComponents.Host | UriComponents.Port | UriComponents.Path, UriFormat.UriEscaped)
+                    : null;
+                var uploadDownloadLoc = string.Concat(uploadManifestLoc, ".zip");
 
-                    if (!JToken.DeepEquals(json, newManifest))
-                    {
-                        var newDownloadUrl = newManifest.Value<string>("download");
+                var onlineManifestUrl = string.Concat(options.Prefix, uploadManifestLoc);
+                var onlineDownloadUrl = string.Concat(options.Prefix, uploadDownloadLoc);
 
-                        if (!string.IsNullOrEmpty(newDownloadUrl))
-                        {
-                            // Replace local manifest with the new manifest.
-                            await File.WriteAllTextAsync(file.FullName, newManifestJson);
+                // Replace Json.
+                newManifest["manifest"] = onlineManifestUrl;
+                newManifest["download"] = onlineDownloadUrl;
 
-                            // Replace Json.
-                            newManifest["manifest"] = onlineManifestUrl;
-                            newManifest["download"] = onlineDownloadUrl;
-
-                            // Download zip.
-                            using var zipStream = await DownloadAsync(newDownloadUrl, client, newManifest);
-
-                            // Upload.
-                            await storage.WriteTextAsync(uploadManifestLoc, newManifest.ToString());
-                            await storage.WriteAsync(uploadDownloadLoc, zipStream);
-
-                            logger.LogInformation("Uploaded for the update: {file}", file.FullName);
-                        }
-                    }
-                    else
-                    {
-                        logger.LogInformation("Manifest is valid but there is no update: {file}", file.FullName);
-
-                        // Check if there is.
-                        if (!await storage.ExistsAsync(uploadManifestLoc))
-                        {
-                            logger.LogInformation("Manifest is not on the cloud, processing: {file}", file.FullName);
-
-                            // Replace Json.
-                            newManifest["manifest"] = onlineManifestUrl;
-                            newManifest["download"] = onlineDownloadUrl;
-
-                            // Download zip.
-                            using var zipStream = await DownloadAsync(downloadUrl, client, newManifest);
-
-                            // Upload.
-                            await storage.WriteTextAsync(uploadManifestLoc, newManifest.ToString());
-                            await storage.WriteAsync(uploadDownloadLoc, zipStream);
-
-                            logger.LogInformation("Uploaded for the first time: {file}", file.FullName);
-                        }
-                    }
+                // It has updated.
+                if (!JToken.DeepEquals(json, newManifest) && !string.IsNullOrEmpty(newDownloadUrl))
+                {
+                    // Replace local manifest with the new manifest.
+                    await File.WriteAllTextAsync(file.FullName, newManifestJson);
+                }
+                else if (!await storage.ExistsAsync(uploadManifestLoc))
+                {
+                    logger.LogInformation("Manifest is not on the cloud, processing: {file}", file.FullName);
                 }
                 else
                 {
-                    logger.LogError("Manifest is invalid: {file}", file.FullName);
+                    // Skip.
+                    logger.LogInformation("Manifest is valid and is on the cloud: {file}", file.FullName);
+                    return;
                 }
+
+                await UploadAsync(newDownloadUrl, client, newManifest.ToString(), uploadManifestLoc, uploadDownloadLoc);
+                logger.LogInformation("Uploaded for the update: {file}", file.FullName);
             }
             catch (Exception ex)
             {
                 throw new IOException("Reading manifest failed.", ex);
+            }
+        }
+
+        private async Task UploadAsync(string downloadUrl, HttpClient client, string manifestJson, string uploadManifestLoc, string uploadDownloadLoc)
+        {
+            // Download zip.
+            using var zipStream = await DownloadAsync(downloadUrl, client, manifestJson);
+
+            // Upload.
+            if (zipStream != null && zipStream.CanRead)
+            {
+                await storage.WriteTextAsync(uploadManifestLoc, manifestJson);
+                await storage.WriteAsync(uploadDownloadLoc, zipStream);
             }
         }
 
@@ -213,7 +205,7 @@ namespace AstralProjection
         /// <exception cref="DirectoryNotFoundException">Ignore.</exception>
         /// <exception cref="ObjectDisposedException">Ignore.</exception>
         /// <exception cref="ObjectDisposedException">Ignore.</exception>
-        private async Task<Stream> DownloadAsync(string downloadUrl, HttpClient client, JObject newManifest, CancellationToken stoppingToken = default)
+        private async Task<Stream> DownloadAsync(string downloadUrl, HttpClient client, string manifestJson)
         {
             using var zipStream = await client.GetStreamAsync(downloadUrl);
 
@@ -223,7 +215,7 @@ namespace AstralProjection
 
             // Write new manifest.
             var tmpManifest = Path.GetTempFileName();
-            await File.WriteAllTextAsync(tmpManifest, newManifest.ToString());
+            await File.WriteAllTextAsync(tmpManifest, manifestJson);
 
             await zipStream.CopyToAsync(fileStream);
 
@@ -231,7 +223,7 @@ namespace AstralProjection
 
             foreach (var entry in zip.Entries)
             {
-                // In the main folder.
+                // In the main folder or root.
                 if (entry.FullName.Count(c => c == '/') <= 1 && (entry.Name.Equals("system.json") || entry.Name.Equals("module.json")))
                 {
                     var manifestName = entry.FullName;
