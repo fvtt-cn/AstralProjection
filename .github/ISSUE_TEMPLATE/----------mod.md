@@ -1,7 +1,7 @@
 ---
 name: 请求新的镜像系统或 MOD
 about: 提交请求，让星界投影同步新的镜像系统或 MOD
-title: "[镜像请求]"
+title: "[镜像请求] 请求同步的 系统/MOD 名称"
 labels: ''
 assignees: ''
 
