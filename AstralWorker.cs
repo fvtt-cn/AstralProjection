@@ -20,11 +20,12 @@ namespace AstralProjection
     public class AstralWorker : BackgroundService
     {
         private readonly CrontabSchedule schedule;
-        private DateTime nextRunDate;
-        private readonly IBlobStorage storage;
+        private IBlobStorage storage;
         private readonly AstralOptions options;
 
         private readonly ILogger<AstralWorker> logger;
+
+        private DateTime nextRunDate;
 
         // 12 hours to refresh.
         private const string SCHEDULE = "30 */12 * * *";
@@ -38,8 +39,12 @@ namespace AstralProjection
             schedule = CrontabSchedule.Parse(SCHEDULE);
             nextRunDate = schedule.GetNextOccurrence(DateTime.Now);
             logger = lgr;
+        }
 
-            // Initialize.
+        private void ConnectStorage()
+        {
+            // Dispose at first.
+            storage?.Dispose();
 
             // QCloud Specific.
             var allowActions = new string[] { "*" };
@@ -49,7 +54,7 @@ namespace AstralProjection
                 { "region", options.Region },
                 { "allowActions", allowActions },
                 { "allowPrefix", "*" },
-                { "durationSeconds", 3600 },
+                { "durationSeconds", 7200 },
                 { "secretId", options.Id },
                 { "secretKey", options.Key }
             };
@@ -68,6 +73,7 @@ namespace AstralProjection
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            ConnectStorage();
             await ProcessAsync(stoppingToken);
 
             do
@@ -76,6 +82,7 @@ namespace AstralProjection
                 {
                     logger.LogInformation("Crontab triggered.");
 
+                    ConnectStorage();
                     await ProcessAsync(stoppingToken);
 
                     nextRunDate = schedule.GetNextOccurrence(DateTime.Now);
@@ -105,6 +112,7 @@ namespace AstralProjection
                 {
                     if (stoppingToken.IsCancellationRequested)
                     {
+                        logger.LogWarning("Cancellation token requested, stopping...");
                         break;
                     }
 
