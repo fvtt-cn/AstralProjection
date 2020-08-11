@@ -161,10 +161,6 @@ namespace AstralProjection
                 var onlineManifestUrl = string.Concat(options.Prefix, uploadManifestLoc);
                 var onlineDownloadUrl = string.Concat(options.Prefix, uploadDownloadLoc);
 
-                // Replace Json.
-                newManifest["manifest"] = onlineManifestUrl;
-                newManifest["download"] = onlineDownloadUrl;
-
                 // It has updated.
                 if (!JToken.DeepEquals(json, newManifest) && !string.IsNullOrEmpty(newDownloadUrl))
                 {
@@ -181,6 +177,10 @@ namespace AstralProjection
                     logger.LogInformation("Manifest is valid and is on the cloud: {file}", file.FullName);
                     return;
                 }
+
+                // Replace Json.
+                newManifest["manifest"] = onlineManifestUrl;
+                newManifest["download"] = onlineDownloadUrl;
 
                 await UploadAsync(newDownloadUrl, client, newManifest.ToString(), uploadManifestLoc, uploadDownloadLoc);
                 logger.LogInformation("Uploaded for the update: {file}", file.FullName);
