@@ -1,17 +1,15 @@
-using COSSTS;
+using AstralProjection.Options;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NCrontab;
 using Newtonsoft.Json.Linq;
-using Storage.Net;
 using Storage.Net.Blobs;
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
-using System.Security;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -19,119 +17,91 @@ namespace AstralProjection
 {
     public class AstralWorker : BackgroundService
     {
-        private readonly CrontabSchedule schedule;
-        private IBlobStorage storage;
+        private readonly IServiceProvider provider;
         private readonly AstralOptions options;
+        private readonly ILogger logger;
 
-        private readonly ILogger<AstralWorker> logger;
-
+        private readonly CrontabSchedule schedule;
         private DateTime nextRunDate;
 
-        // 12 hours to refresh.
-        private const string SCHEDULE = "30 */12 * * *";
-        private const int CHECK_DELAY_MS = 5000;
-
-        /// <exception cref="SecurityException">Ignore.</exception>
-        public AstralWorker(AstralOptions opts, ILogger<AstralWorker> lgr)
+        public AstralWorker(IServiceProvider serviceProvider, AstralOptions opts, ILogger<AstralWorker> lgr)
         {
+            provider = serviceProvider;
             options = opts;
 
-            schedule = CrontabSchedule.Parse(SCHEDULE);
+            schedule = CrontabSchedule.Parse(opts.Schedule);
             nextRunDate = schedule.GetNextOccurrence(DateTime.Now);
             logger = lgr;
-        }
 
-        private void ConnectStorage()
-        {
-            // Dispose at first.
-            storage?.Dispose();
-
-            // QCloud Specific.
-            var allowActions = new string[] { "*" };
-            var dict = new Dictionary<string, object>
+            if (string.IsNullOrEmpty(options.Dir))
             {
-                { "bucket", options.Bucket },
-                { "region", options.Region },
-                { "allowActions", allowActions },
-                { "allowPrefix", "*" },
-                { "durationSeconds", 7200 },
-                { "secretId", options.Id },
-                { "secretKey", options.Key }
-            };
-            var result = STSClient.genCredential(dict);
-            var c = result["Credentials"] as JToken;
+                logger.LogError($"Configuration for {nameof(AstralWorker)} is invalid.");
+                throw new ArgumentException(nameof(opts));
+            }
 
-            // S3.
-            storage = StorageFactory.Blobs.AwsS3(
-                c.Value<string>("TmpSecretId"),
-                c.Value<string>("TmpSecretKey"),
-                c.Value<string>("Token"),
-                options.Bucket,
-                null,
-                options.ServiceUrl);
+            if (!Directory.Exists(options.Dir))
+            {
+                Directory.CreateDirectory(options.Dir);
+            }
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            ConnectStorage();
-            await ProcessAsync(stoppingToken);
+            // Run on startup.
+            await ProcessAsync(stoppingToken).ConfigureAwait(false);
 
             do
             {
                 if (DateTime.Now > nextRunDate)
                 {
-                    logger.LogInformation("Crontab triggered.");
-
-                    ConnectStorage();
-                    await ProcessAsync(stoppingToken);
+                    logger.LogInformation($"{nameof(AstralWorker)} triggered.");
+                    await ProcessAsync(stoppingToken).ConfigureAwait(false);
 
                     nextRunDate = schedule.GetNextOccurrence(DateTime.Now);
                 }
 
                 // Wait 5s to check.
-                await Task.Delay(CHECK_DELAY_MS);
-            }
-            while (!stoppingToken.IsCancellationRequested);
+                await Task.Delay(GlobalSettings.CHECK_DELAY_MS, stoppingToken);
+            } while (!stoppingToken.IsCancellationRequested);
         }
 
-        /// <exception cref="SecurityException">Ignore.</exception>
-        /// <exception cref="PathTooLongException">Ignore.</exception>
-        /// <exception cref="DirectoryNotFoundException">Ignore.</exception>
         private async Task ProcessAsync(CancellationToken stoppingToken = default)
         {
-            if (!string.IsNullOrEmpty(options.Dir) && Directory.Exists(options.Dir))
+            using var httpClient = new HttpClient();
+            using var scope = provider.CreateScope();
+            using var storage = scope.ServiceProvider.GetRequiredService<IBlobStorage>();
+
+            // All json.
+            var dir = new DirectoryInfo(options.Dir);
+
+            // Recursive.
+            var files = dir.GetFiles("*.json", SearchOption.AllDirectories);
+
+            foreach (var file in files)
             {
-                // All jsons.
-                var dir = new DirectoryInfo(options.Dir);
-
-                // Recursive.
-                var files = dir.GetFiles("*.json", SearchOption.AllDirectories);
-                using var httpClient = new HttpClient();
-
-                foreach (var file in files)
+                if (stoppingToken.IsCancellationRequested)
                 {
-                    if (stoppingToken.IsCancellationRequested)
-                    {
-                        logger.LogWarning("Cancellation token requested, stopping...");
-                        break;
-                    }
-
-                    try
-                    {
-                        await ReadManifestAsync(file, httpClient, stoppingToken);
-                    }
-                    catch (IOException ex)
-                    {
-                        logger.LogError(ex, "File path: {file}", file.FullName);
-                    }
+                    logger.LogWarning("Cancellation token requested, stopping...");
+                    break;
                 }
 
-                logger.LogInformation("Process completed.");
+                try
+                {
+                    await ReadManifestAsync(storage, file, httpClient, stoppingToken);
+                }
+                catch (IOException ex)
+                {
+                    logger.LogError(ex, "Failed to handle {file}.", file.FullName);
+                }
             }
+
+            logger.LogInformation("Astral process completed.");
         }
 
-        /// <exception cref="IOException">Ignore.</exception>
-        private async Task ReadManifestAsync(FileInfo file, HttpClient client, CancellationToken stoppingToken = default)
+        private async Task ReadManifestAsync(IBlobStorage storage,
+            FileInfo file,
+            HttpClient client,
+            CancellationToken stoppingToken = default)
         {
             try
             {
@@ -143,7 +113,7 @@ namespace AstralProjection
 
                 if (string.IsNullOrEmpty(manifestUrl) || string.IsNullOrEmpty(downloadUrl))
                 {
-                    logger.LogError("Manifest is invalid: {file}", file.FullName);
+                    logger.LogError("Manifest is invalid: {file}.", file.FullName);
                     return;
                 }
 
@@ -154,7 +124,8 @@ namespace AstralProjection
 
                 // Truncate query string.
                 var uploadManifestLoc = Uri.TryCreate(manifestUrl, UriKind.Absolute, out var uploadManifestUri)
-                    ? uploadManifestUri.GetComponents(UriComponents.Host | UriComponents.Port | UriComponents.Path, UriFormat.UriEscaped)
+                    ? uploadManifestUri.GetComponents(UriComponents.Host | UriComponents.Port | UriComponents.Path,
+                        UriFormat.UriEscaped)
                     : null;
                 var uploadDownloadLoc = string.Concat(uploadManifestLoc, ".zip");
 
@@ -165,16 +136,16 @@ namespace AstralProjection
                 if (!JToken.DeepEquals(json, newManifest) && !string.IsNullOrEmpty(newDownloadUrl))
                 {
                     // Replace local manifest with the new manifest.
-                    await File.WriteAllTextAsync(file.FullName, newManifestJson);
+                    await File.WriteAllTextAsync(file.FullName, newManifestJson, stoppingToken);
                 }
-                else if (!await storage.ExistsAsync(uploadManifestLoc))
+                else if (!await storage.ExistsAsync(uploadManifestLoc, stoppingToken))
                 {
                     logger.LogInformation("Manifest is not on the cloud, processing: {file}", file.FullName);
                 }
                 else
                 {
                     // Skip.
-                    logger.LogInformation("Manifest is valid and is on the cloud: {file}", file.FullName);
+                    // logger.LogInformation("Manifest is valid and is on the cloud: {file}", file.FullName);
                     return;
                 }
 
@@ -182,19 +153,25 @@ namespace AstralProjection
                 newManifest["manifest"] = onlineManifestUrl;
                 newManifest["download"] = onlineDownloadUrl;
 
-                await UploadAsync(newDownloadUrl, client, newManifest.ToString(), uploadManifestLoc, uploadDownloadLoc);
-                logger.LogInformation("Uploaded for the update: {file}", file.FullName);
+                await UploadAsync(storage, newDownloadUrl, client, newManifest.ToString(), uploadManifestLoc,
+                    uploadDownloadLoc);
+                logger.LogInformation("Successfully updated: {file}", file.FullName);
             }
             catch (Exception ex)
             {
-                throw new IOException("Reading manifest failed.", ex);
+                throw new IOException($"Failed to handle manifest '{file.FullName}'.", ex);
             }
         }
 
-        private async Task UploadAsync(string downloadUrl, HttpClient client, string manifestJson, string uploadManifestLoc, string uploadDownloadLoc)
+        private async Task UploadAsync(IBlobStorage storage,
+            string downloadUrl,
+            HttpClient client,
+            string manifestJson,
+            string uploadManifestLoc,
+            string uploadDownloadLoc)
         {
             // Download zip.
-            using var zipStream = await DownloadAsync(downloadUrl, client, manifestJson);
+            await using var zipStream = await DownloadAsync(downloadUrl, client, manifestJson);
 
             // Upload.
             if (zipStream != null && zipStream.CanRead)
@@ -204,18 +181,9 @@ namespace AstralProjection
             }
         }
 
-        /// <exception cref="HttpRequestException">Ignore.</exception>
-        /// <exception cref="InvalidDataException">Ignore.</exception>
-        /// <exception cref="SecurityException">Ignore.</exception>
-        /// <exception cref="IOException">Ignore.</exception>
-        /// <exception cref="UnauthorizedAccessException">Ignore.</exception>
-        /// <exception cref="PathTooLongException">Ignore.</exception>
-        /// <exception cref="DirectoryNotFoundException">Ignore.</exception>
-        /// <exception cref="ObjectDisposedException">Ignore.</exception>
-        /// <exception cref="ObjectDisposedException">Ignore.</exception>
         private async Task<Stream> DownloadAsync(string downloadUrl, HttpClient client, string manifestJson)
         {
-            using var zipStream = await client.GetStreamAsync(downloadUrl);
+            await using var zipStream = await client.GetStreamAsync(downloadUrl);
 
             // Temp file stream.
             var tempFilePath = Path.GetTempFileName();
@@ -232,7 +200,8 @@ namespace AstralProjection
             foreach (var entry in zip.Entries)
             {
                 // In the main folder or root.
-                if (entry.FullName.Count(c => c == '/') <= 1 && (entry.Name.Equals("system.json") || entry.Name.Equals("module.json")))
+                if (entry.FullName.Count(c => c == '/') <= 1 &&
+                    (entry.Name.Equals("system.json") || entry.Name.Equals("module.json")))
                 {
                     var manifestName = entry.FullName;
                     entry.Delete();
@@ -243,14 +212,8 @@ namespace AstralProjection
                 }
             }
 
-            logger.LogWarning("Zip file manifest not found.");
+            logger.LogWarning($"Zip file '{downloadUrl}' manifest not found.");
             return null;
-        }
-
-        public override void Dispose()
-        {
-            storage?.Dispose();
-            base.Dispose();
         }
     }
 }

@@ -1,6 +1,6 @@
-﻿namespace AstralProjection
+﻿namespace AstralProjection.Options
 {
-    public class AstralOptions
+    public class S3Options
     {
         // S3.
         public string Bucket { get; set; }
@@ -12,11 +12,5 @@
         public string Key { get; set; }
 
         public string ServiceUrl { get; set; }
-
-
-        // Local.
-        public string Dir { get; set; }
-
-        public string Prefix { get; set; }
     }
 }
