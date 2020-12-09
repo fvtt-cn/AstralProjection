@@ -8,7 +8,6 @@ using Storage.Net.Blobs;
 using System;
 using System.IO;
 using System.IO.Compression;
-using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -200,8 +199,7 @@ namespace AstralProjection
             foreach (var entry in zip.Entries)
             {
                 // In the main folder or root.
-                if (entry.FullName.Count(c => c == '/') <= 1 &&
-                    (entry.Name.Equals("system.json") || entry.Name.Equals("module.json")))
+                if (entry.Name.Equals("system.json") || entry.Name.Equals("module.json"))
                 {
                     var manifestName = entry.FullName;
                     entry.Delete();
