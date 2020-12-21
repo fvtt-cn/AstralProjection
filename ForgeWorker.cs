@@ -133,7 +133,8 @@ namespace AstralProjection
             if (await storage.ExistsAsync(filePath, stoppingToken))
             {
                 logger.LogInformation("Release file already exists at: {path}", filePath);
-                throw new InvalidOperationException("File exists");
+                // Skip if duplicated.
+                return;
             }
 
             // Download.
@@ -243,7 +244,7 @@ namespace AstralProjection
             if (!versions.Any())
             {
                 logger.LogError("No available versions in the release page from: {minVer}", options.Minimum);
-                throw new InvalidOperationException("Array count is invalid");
+                // throw new InvalidOperationException("Array count is invalid");
             }
 
             logger.LogInformation("Got available versions in total: {count}", versions.Length);
