@@ -1,4 +1,5 @@
 using AstralProjection.Options;
+using Cysharp.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -112,8 +113,8 @@ namespace AstralProjection
             // Truncate protocol and query string.
             var (astralMfName, astralDlName) = GenerateAstralFullName(remoteMfUrl);
 
-            var astralMfUrl = string.Concat(options.Prefix, astralMfName);
-            var astralDlUrl = string.Concat(options.Prefix, astralDlName);
+            var astralMfUrl = ZString.Concat(options.Prefix, astralMfName);
+            var astralDlUrl = ZString.Concat(options.Prefix, astralDlName);
 
             // Replace local manifest with the new manifest if updated.
             var manifestUpdated = await UpdateLocalManifestAsync(file, localJson, remoteJson);
@@ -224,7 +225,7 @@ namespace AstralProjection
             if (Uri.TryCreate(manifestUrl, UriKind.Absolute, out var astralMfUri))
             {
                 var astralMfName = astralMfUri.GetComponents(UriComponents.Host | UriComponents.Port | UriComponents.Path, UriFormat.UriEscaped);
-                var astralDlName = string.Concat(astralMfName, ".zip");
+                var astralDlName = ZString.Concat(astralMfName, ".zip");
 
                 return (astralMfName, astralDlName);
             }
@@ -262,7 +263,7 @@ namespace AstralProjection
             // Open the zip file.
             using var zip = new ZipArchive(zipStream, ZipArchiveMode.Update, true);
             var replaced = false;
-            var manifestName = string.Concat(manifestType, ".json");
+            var manifestName = ZString.Concat(manifestType, ".json");
 
             foreach (var entry in zip.Entries.Where(e => e.Name.Equals(manifestName)))
             {

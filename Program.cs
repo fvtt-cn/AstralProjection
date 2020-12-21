@@ -3,6 +3,8 @@ using AstralProjection.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using ZLogger;
 
 namespace AstralProjection
 {
@@ -15,6 +17,11 @@ namespace AstralProjection
 
         public static IHostBuilder CreateHostBuilder(string[] args) =>
             Host.CreateDefaultBuilder(args)
+                .ConfigureLogging(logging =>
+                {
+                    logging.ClearProviders();
+                    logging.AddZLoggerConsole();
+                })
                 .ConfigureServices((hostContext, services) =>
                 {
                     // Inject worker options directly instead of IOptions.

@@ -13,5 +13,6 @@
     <PackageReference Include="Storage.Net" Version="9.2.7" />
     <PackageReference Include="Storage.Net.Amazon.Aws" Version="9.2.7" />
     <PackageReference Include="Tencent.QCloud.Cos.Sts.Sdk" Version="3.0.3" />
+    <PackageReference Include="ZLogger" Version="1.3.0" />
   </ItemGroup>
 </Project>
