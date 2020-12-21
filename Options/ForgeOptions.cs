@@ -20,5 +20,10 @@
 
         // Every even day, 2:30 AM UTC.
         public string Schedule { get; set; } = "30 2 */2 * *";
+
+        /// <summary>
+        /// Upload timeout in seconds, 240s by default.
+        /// </summary>
+        public int UploadTimeout { get; set; } = 240;
     }
 }

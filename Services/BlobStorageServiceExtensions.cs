@@ -28,7 +28,7 @@ namespace AstralProjection.Services
             services.AddOptions();
             services.Configure(setupAction);
 
-            services.TryAddScoped<IBlobStorage>(provider =>
+            services.TryAddScoped(provider =>
             {
                 var s3Options = provider.GetRequiredService<IOptions<S3Options>>();
                 var options = s3Options.Value;
@@ -41,7 +41,7 @@ namespace AstralProjection.Services
                     { "region", options.Region },
                     { "allowActions", allowActions },
                     { "allowPrefix", "*" },
-                    { "durationSeconds", 7200 },
+                    { "durationSeconds", options.Timeout },
                     { "secretId", options.Id },
                     { "secretKey", options.Key }
                 };
@@ -59,7 +59,7 @@ namespace AstralProjection.Services
                         options.ServiceUrl);
                 }
 
-                throw new ArgumentException("Can not initialize S3 storage.");
+                throw new ArgumentException("Can not initialize S3 storage", nameof(setupAction));
             });
 
             return services;

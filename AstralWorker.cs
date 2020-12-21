@@ -3,12 +3,16 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NCrontab;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Storage.Net.Blobs;
 using System;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Net.Http;
+using System.Security;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -32,29 +36,32 @@ namespace AstralProjection
             nextRunDate = schedule.GetNextOccurrence(DateTime.Now);
             logger = lgr;
 
+            ConfigureJsonDirectory();
+        }
+
+        private void ConfigureJsonDirectory()
+        {
+            // Configure.
             if (string.IsNullOrEmpty(options.Dir))
             {
-                logger.LogError($"Configuration for {nameof(AstralWorker)} is invalid.");
-                throw new ArgumentException(nameof(opts));
+                logger.LogError("Configuration is invalid for: {worker}", nameof(AstralWorker));
+                throw new ArgumentException("Directory name is null or empty", nameof(options));
             }
 
-            if (!Directory.Exists(options.Dir))
-            {
-                Directory.CreateDirectory(options.Dir);
-            }
+            Directory.CreateDirectory(options.Dir);
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             // Run on startup.
-            await ProcessAsync(stoppingToken).ConfigureAwait(false);
+            await ProcessAsync(stoppingToken);
 
             do
             {
                 if (DateTime.Now > nextRunDate)
                 {
-                    logger.LogInformation($"{nameof(AstralWorker)} triggered.");
-                    await ProcessAsync(stoppingToken).ConfigureAwait(false);
+                    logger.LogInformation("Worker schedule triggered: {worker}", nameof(AstralWorker));
+                    await ProcessAsync(stoppingToken);
 
                     nextRunDate = schedule.GetNextOccurrence(DateTime.Now);
                 }
@@ -66,14 +73,13 @@ namespace AstralProjection
 
         private async Task ProcessAsync(CancellationToken stoppingToken = default)
         {
+            // Initialize HttpClient and BlobStorage when processing.
             using var httpClient = new HttpClient();
             using var scope = provider.CreateScope();
             using var storage = scope.ServiceProvider.GetRequiredService<IBlobStorage>();
 
-            // All json.
+            // Search all json recursively.
             var dir = new DirectoryInfo(options.Dir);
-
-            // Recursive.
             var files = dir.GetFiles("*.json", SearchOption.AllDirectories);
 
             foreach (var file in files)
@@ -86,132 +92,220 @@ namespace AstralProjection
 
                 try
                 {
-                    await ReadManifestAsync(storage, file, httpClient, stoppingToken);
+                    await ProcessFileAsync(file, httpClient, storage, stoppingToken);
                 }
-                catch (IOException ex)
+                catch (Exception ex)
                 {
-                    logger.LogError(ex, "Failed to handle {file}.", file.FullName);
+                    logger.LogError(ex, "Failed to process: {file}", file.FullName);
                 }
             }
 
-            logger.LogInformation("Astral process completed.");
+            logger.LogInformation("Worker process completed: {worker}", nameof(AstralWorker));
         }
 
-        private async Task ReadManifestAsync(IBlobStorage storage,
-            FileInfo file,
-            HttpClient client,
+        private async Task ProcessFileAsync(FileInfo file, HttpClient httpClient, IBlobStorage storage, CancellationToken stoppingToken = default)
+        {
+            var (localJson, localMfUrl, _) = await ReadLocalManifestAsync(file, stoppingToken);
+            var (remoteJson, remoteMfUrl, remoteDlUrl) = await ReadRemoteManifestAsync(localMfUrl, httpClient, stoppingToken);
+            var title = remoteJson.Value<string>("title");
+
+            // Truncate protocol and query string.
+            var (astralMfName, astralDlName) = GenerateAstralFullName(remoteMfUrl);
+
+            var astralMfUrl = string.Concat(options.Prefix, astralMfName);
+            var astralDlUrl = string.Concat(options.Prefix, astralDlName);
+
+            // Replace local manifest with the new manifest if updated.
+            var manifestUpdated = await UpdateLocalManifestAsync(file, localJson, remoteJson);
+            var alreadyExists = await storage.ExistsAsync(astralMfName, stoppingToken);
+
+            if (manifestUpdated || !alreadyExists)
+            {
+                // If the manifest changed/updated or does not exist in the folder, upload it to the cloud.
+                remoteJson["manifest"] = astralMfUrl;
+                remoteJson["download"] = astralDlUrl;
+                var astralJsonString = remoteJson.ToString();
+
+                var manifestType = astralMfName.EndsWith("system.json", StringComparison.OrdinalIgnoreCase) ? "system" : "module";
+                await using var zipStream = await DownloadZipAsync(remoteDlUrl, astralJsonString, manifestType, httpClient, stoppingToken);
+
+                // Upload with timeout set (linked to the stoppingToken).
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                timeoutCts.CancelAfter(options.UploadTimeout * 1000);
+
+                try
+                {
+                    await storage.WriteAsync(astralDlName, zipStream, false, timeoutCts.Token);
+                    await storage.WriteTextAsync(astralMfName, astralJsonString, Encoding.UTF8, timeoutCts.Token);
+
+                    logger.LogInformation("Updated the {type} named {title} from: {file}", manifestType, title, file.FullName);
+                }
+                catch (OperationCanceledException oce)
+                {
+                    logger.LogError(oce, "Failed to upload files to the storage due to timeout for: {file}", file.FullName);
+                }
+            }
+        }
+
+        private async Task<(JObject Json, string ManifestUrl, string DownloadUrl)> ReadLocalManifestAsync(FileInfo file,
             CancellationToken stoppingToken = default)
         {
             try
             {
                 var jsonString = await File.ReadAllTextAsync(file.FullName, stoppingToken);
-                var json = JObject.Parse(jsonString);
-
-                var manifestUrl = json.Value<string>("manifest");
-                var downloadUrl = json.Value<string>("download");
-
-                if (string.IsNullOrEmpty(manifestUrl) || string.IsNullOrEmpty(downloadUrl))
-                {
-                    logger.LogError("Manifest is invalid: {file}.", file.FullName);
-                    return;
-                }
-
-                // Try to download new manifest url.
-                var newManifestJson = await client.GetStringAsync(manifestUrl);
-                var newManifest = JObject.Parse(newManifestJson);
-                var newDownloadUrl = newManifest.Value<string>("download");
-
-                // Truncate query string.
-                var uploadManifestLoc = Uri.TryCreate(manifestUrl, UriKind.Absolute, out var uploadManifestUri)
-                    ? uploadManifestUri.GetComponents(UriComponents.Host | UriComponents.Port | UriComponents.Path,
-                        UriFormat.UriEscaped)
-                    : null;
-                var uploadDownloadLoc = string.Concat(uploadManifestLoc, ".zip");
-
-                var onlineManifestUrl = string.Concat(options.Prefix, uploadManifestLoc);
-                var onlineDownloadUrl = string.Concat(options.Prefix, uploadDownloadLoc);
-
-                // It has updated.
-                if (!JToken.DeepEquals(json, newManifest) && !string.IsNullOrEmpty(newDownloadUrl))
-                {
-                    // Replace local manifest with the new manifest.
-                    await File.WriteAllTextAsync(file.FullName, newManifestJson, stoppingToken);
-                }
-                else if (!await storage.ExistsAsync(uploadManifestLoc, stoppingToken))
-                {
-                    logger.LogInformation("Manifest is not on the cloud, processing: {file}", file.FullName);
-                }
-                else
-                {
-                    // Skip.
-                    // logger.LogInformation("Manifest is valid and is on the cloud: {file}", file.FullName);
-                    return;
-                }
-
-                // Replace Json.
-                newManifest["manifest"] = onlineManifestUrl;
-                newManifest["download"] = onlineDownloadUrl;
-
-                await UploadAsync(storage, newDownloadUrl, client, newManifest.ToString(), uploadManifestLoc,
-                    uploadDownloadLoc);
-                logger.LogInformation("Successfully updated: {file}", file.FullName);
+                return ReadManifest(jsonString);
             }
-            catch (Exception ex)
+            catch (IOException ioe)
             {
-                throw new IOException($"Failed to handle manifest '{file.FullName}'.", ex);
+                logger.LogError(ioe, "Unable to read contents due to IO errors from: {file}", file.FullName);
+                throw;
+            }
+            catch (UnauthorizedAccessException uae)
+            {
+                logger.LogError(uae, "Unable to read contents due to unauthorized access from: {file}", file.FullName);
+                throw;
+            }
+            catch (SecurityException se)
+            {
+                logger.LogError(se, "Unable to read contents due to file security limit from: {file}", file.FullName);
+                throw;
+            }
+            catch (JsonReaderException jre)
+            {
+                logger.LogError(jre, "Json read invalid string from: {file}", file.FullName);
+                throw;
+            }
+            catch (ArgumentException ae)
+            {
+                logger.LogError(ae, "Necessary properties not in: {file}", file.FullName);
+                throw;
+            }
+            catch (OperationCanceledException oce)
+            {
+                logger.LogError(oce, "Manifest reading operation cancelled for: {file}", file.FullName);
+                throw;
             }
         }
 
-        private async Task UploadAsync(IBlobStorage storage,
-            string downloadUrl,
+        private async Task<(JObject Json, string ManifestUrl, string DownloadUrl)> ReadRemoteManifestAsync(
+            string manifestUrl,
             HttpClient client,
-            string manifestJson,
-            string uploadManifestLoc,
-            string uploadDownloadLoc)
+            CancellationToken stoppingToken = default)
         {
-            // Download zip.
-            await using var zipStream = await DownloadAsync(downloadUrl, client, manifestJson);
-
-            // Upload.
-            if (zipStream != null && zipStream.CanRead)
+            try
             {
-                await storage.WriteTextAsync(uploadManifestLoc, manifestJson);
-                await storage.WriteAsync(uploadDownloadLoc, zipStream);
+                var jsonString = await client.GetStringAsync(manifestUrl, stoppingToken);
+                return ReadManifest(jsonString);
+            }
+            catch (HttpRequestException hre)
+            {
+                logger.LogError(hre, "HTTP error occurred when GET manifest string from: {url}", manifestUrl);
+                throw;
+            }
+            catch (JsonReaderException jre)
+            {
+                logger.LogError(jre, "Json read invalid string from: {url}", manifestUrl);
+                throw;
+            }
+            catch (ArgumentException ae)
+            {
+                logger.LogError(ae, "Necessary properties not in: {url}", manifestUrl);
+                throw;
+            }
+            catch (OperationCanceledException oce)
+            {
+                logger.LogError(oce, "Manifest reading operation cancelled for: {url}", manifestUrl);
+                throw;
             }
         }
 
-        private async Task<Stream> DownloadAsync(string downloadUrl, HttpClient client, string manifestJson)
+        private (string AstralManifestName, string AstralDownloadName) GenerateAstralFullName(string manifestUrl)
         {
-            await using var zipStream = await client.GetStreamAsync(downloadUrl);
-
-            // Temp file stream.
-            var tempFilePath = Path.GetTempFileName();
-            var fileStream = File.Open(tempFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite);
-
-            // Write new manifest.
-            var tmpManifest = Path.GetTempFileName();
-            await File.WriteAllTextAsync(tmpManifest, manifestJson);
-
-            await zipStream.CopyToAsync(fileStream);
-
-            using var zip = new ZipArchive(fileStream, ZipArchiveMode.Update, true);
-
-            foreach (var entry in zip.Entries)
+            if (Uri.TryCreate(manifestUrl, UriKind.Absolute, out var astralMfUri))
             {
-                // In the main folder or root.
-                if (entry.Name.Equals("system.json") || entry.Name.Equals("module.json"))
-                {
-                    var manifestName = entry.FullName;
-                    entry.Delete();
+                var astralMfName = astralMfUri.GetComponents(UriComponents.Host | UriComponents.Port | UriComponents.Path, UriFormat.UriEscaped);
+                var astralDlName = string.Concat(astralMfName, ".zip");
 
-                    zip.CreateEntryFromFile(tmpManifest, manifestName);
-
-                    return fileStream;
-                }
+                return (astralMfName, astralDlName);
             }
 
-            logger.LogWarning($"Zip file '{downloadUrl}' manifest not found.");
-            return null;
+            logger.LogError("Unable to transform the manifest URL into Uri for: {url}", manifestUrl);
+            throw new ArgumentException("URL is invalid", nameof(manifestUrl));
+        }
+
+        private async Task<bool> UpdateLocalManifestAsync(FileInfo file, JObject local, JObject remote)
+        {
+            if (JToken.DeepEquals(local, remote))
+            {
+                return false;
+            }
+
+            logger.LogInformation("Local manifest updated for: {file}", file.FullName);
+            await File.WriteAllTextAsync(file.FullName, remote.ToString());
+            return true;
+        }
+
+        private async Task<Stream> DownloadZipAsync(string downloadUrl,
+            string astralJsonString,
+            string manifestType,
+            HttpClient client,
+            CancellationToken stoppingToken = default)
+        {
+            // Temp zip stream for later using, do not dispose.
+            var tmpZipName = Path.GetTempFileName();
+            var zipStream = File.Open(tmpZipName, FileMode.OpenOrCreate, FileAccess.ReadWrite);
+
+            // Get stream and download to the temp file.
+            await using var dlStream = await client.GetStreamAsync(downloadUrl, stoppingToken);
+            await dlStream.CopyToAsync(zipStream, stoppingToken);
+
+            // Open the zip file.
+            using var zip = new ZipArchive(zipStream, ZipArchiveMode.Update, true);
+            var replaced = false;
+            var manifestName = string.Concat(manifestType, ".json");
+
+            foreach (var entry in zip.Entries.Where(e => e.Name.Equals(manifestName)))
+            {
+                await using var entryStream = entry.Open();
+                entryStream.SetLength(0);
+
+                await using var writer = new StreamWriter(entryStream);
+                await writer.WriteAsync(astralJsonString);
+
+                replaced = true;
+            }
+
+            if (!replaced)
+            {
+                logger.LogWarning("Manifest file not found in the zip file for: {url}", downloadUrl);
+                await zipStream.DisposeAsync();
+            }
+
+            if (!zipStream.CanRead)
+            {
+                logger.LogError("Failed to download the zip from: {url}", downloadUrl);
+                throw new ArgumentException("Download URL is invalid", downloadUrl);
+            }
+
+            logger.LogTrace("Zip file is updated and ready to be uploaded for: {url}", downloadUrl);
+            return zipStream;
+        }
+
+        private (JObject Json, string ManifestUrl, string DownloadUrl) ReadManifest(string jsonString)
+        {
+            var json = JObject.Parse(jsonString);
+
+            var manifestUrl = json.Value<string>("manifest");
+            var downloadUrl = json.Value<string>("download");
+
+            if (string.IsNullOrEmpty(manifestUrl) || string.IsNullOrEmpty(downloadUrl))
+            {
+                logger.LogWarning("Manifest does not include manifest/download URLs: {jsonString}", jsonString);
+                throw new ArgumentException("Json is invalid", nameof(jsonString));
+            }
+
+            logger.LogTrace("Extract URLs for the manifest: {manifest}, {download}", manifestUrl, downloadUrl);
+            return (json, manifestUrl, downloadUrl);
         }
     }
 }

@@ -29,8 +29,7 @@ namespace AstralProjection
         private readonly CrontabSchedule schedule;
         private DateTime nextRunDate;
 
-        private readonly string[] platforms;
-        private static readonly string[] SupportedPlatforms = { "linux", "windows", "mac" };
+        private string[] platforms;
 
         public ForgeWorker(IServiceProvider serviceProvider, ForgeOptions opts, ILogger<ForgeWorker> lgr)
         {
@@ -41,30 +40,35 @@ namespace AstralProjection
             nextRunDate = schedule.GetNextOccurrence(DateTime.Now);
             logger = lgr;
 
+            ConfigurePlatforms();
+        }
+
+        private void ConfigurePlatforms()
+        {
             // Default all platforms.
-            platforms = options.Platforms ?? SupportedPlatforms;
-            platforms = platforms.Where(x => SupportedPlatforms.Contains(x)).ToArray();
+            platforms = options.Platforms ?? GlobalSettings.SUPPORTED_PLATFORMS;
+            platforms = platforms.Where(x => GlobalSettings.SUPPORTED_PLATFORMS.Contains(x)).ToArray();
 
-            if (string.IsNullOrEmpty(options.Username) || string.IsNullOrEmpty(options.Password) ||
-                !options.Minimum.IsVersion() || !platforms.Any())
-
+            if (string.IsNullOrEmpty(options.Username) || string.IsNullOrEmpty(options.Password) || !options.Minimum.IsVersion() || !platforms.Any())
             {
-                logger.LogError($"Configuration for {nameof(ForgeWorker)} is invalid.");
-                throw new ArgumentException(nameof(opts));
+                logger.LogError("Configuration is invalid for: {worker}", nameof(ForgeWorker));
+                throw new ArgumentException("Platform or version is invalid", nameof(options));
             }
+
+            logger.LogInformation("Scheduled to refresh from {version} for platforms: {plats}", options.Minimum, string.Join(", ", platforms));
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             // Run on startup.
-            await ProcessAsync(stoppingToken).ConfigureAwait(false);
+            await ProcessAsync(stoppingToken);
 
             do
             {
                 if (DateTime.Now > nextRunDate)
                 {
-                    logger.LogInformation($"{nameof(ForgeWorker)} triggered.");
-                    await ProcessAsync(stoppingToken).ConfigureAwait(false);
+                    logger.LogInformation("Worker schedule triggered: {worker}", nameof(ForgeWorker));
+                    await ProcessAsync(stoppingToken);
 
                     nextRunDate = schedule.GetNextOccurrence(DateTime.Now);
                 }
@@ -76,58 +80,20 @@ namespace AstralProjection
 
         private async Task ProcessAsync(CancellationToken stoppingToken = default)
         {
-            // Firstly, try to login.
-            logger.LogInformation($"Logging in as {options.Username}");
-
+            // Try to login.
             var config = Configuration.Default.WithDefaultCookies().WithDefaultLoader();
             using var context = BrowsingContext.New(config);
 
             var csrfToken = await FetchCsrfTokensAsync(context, stoppingToken);
-            if (string.IsNullOrEmpty(csrfToken))
-            {
-                logger.LogError("Fetched CSRF token is empty and invalid.");
-                return;
-            }
-
-            logger.LogInformation("Homepage loaded.");
-
             var cookies = await LoginAsync(context, csrfToken, stoppingToken);
-            if (string.IsNullOrEmpty(cookies) || !cookies.Contains("sessionid", StringComparison.OrdinalIgnoreCase))
-            {
-                logger.LogError($"Fetched Cookies {cookies} is invalid.");
-                return;
-            }
 
-            logger.LogInformation("Site logged in.");
+            // Get current versions list by extracting release notes page.
+            var versions = await GetVersionsAsync(context, stoppingToken);
 
-            // Secondly, get current versions list by extracting release notes page.
-            var versions = await GetVersionsAsync(context, stoppingToken) ?? Array.Empty<string>();
-            versions = versions.Where(x => x.VersionGte(options.Minimum)).ToArray() ;
+            // Set cookies for download.
+            using var client = ConfigureDownloadClient(cookies);
 
-            if (!versions.Any())
-            {
-                logger.LogError("No available versions.");
-                return;
-            }
-
-            logger.LogInformation($"Fetched {versions.Length} available versions.");
-
-            // Then set cookies for download.
-            var cookieCon = new CookieContainer();
-            foreach (var c in cookies.Split(';'))
-            {
-                cookieCon.SetCookies(new Uri("https://foundryvtt.com"), c);
-            }
-
-            // To download manually, needs to prevent auto redirection.
-            using var handler = new HttpClientHandler { CookieContainer = cookieCon, AllowAutoRedirect = false };
-
-            using var client = new HttpClient(handler) { BaseAddress = new Uri("https://foundryvtt.com") };
-            client.DefaultRequestHeaders.Referrer = new Uri("https://foundryvtt.com");
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0");
-            client.DefaultRequestHeaders.TryAddWithoutValidation("DNT", "1");
-
-            // Final step, check file exists and download & upload to S3.
+            // Check file exists and download & upload to S3.
             using var scope = provider.CreateScope();
             using var storage = scope.ServiceProvider.GetRequiredService<IBlobStorage>();
 
@@ -141,74 +107,80 @@ namespace AstralProjection
                         break;
                     }
 
-                    var filePath = StoragePath.Combine(options.StorageDir, platform,
-                        $"foundryvtt-{version}.{GetFileExtension(platform)}");
-
-                    // Do not check hash.
-                    if (await storage.ExistsAsync(filePath, stoppingToken))
+                    try
                     {
-                        logger.LogInformation($"File '{filePath}' already exists.");
-                        continue;
+                        await ProcessReleaseAsync(platform, version, client, storage, stoppingToken);
                     }
-
-                    // Download.
-                    await using var fileStream =
-                        await DownloadAsync(client, version, platform, stoppingToken);
-
-                    // > 1M at least.
-                    if (fileStream != null && fileStream.Length > 1024 * 1024)
+                    catch (Exception ex)
                     {
-                        // Upload.
-                        await storage.WriteAsync(filePath, fileStream, false, stoppingToken);
-                        logger.LogInformation($"File '{filePath}' uploaded.");
+                        logger.LogError(ex, "Failed to process release: {ver} of {plat}", version, platform);
                     }
                 }
             }
 
-            logger.LogInformation("Forge process completed.");
+            logger.LogInformation("Worker process completed: {worker}", nameof(ForgeWorker));
         }
 
-        private static string GetFileExtension(string platform) => platform.ToUpper() switch
-        {
-            "WINDOWS" => "exe",
-            "MAC" => "dmg",
-            "LINUX" => "zip",
-            _ => "zip"
-        };
-
-        private async Task<string> FetchCsrfTokensAsync(IBrowsingContext context,
+        private async Task ProcessReleaseAsync(string platform,
+            string version,
+            HttpClient client,
+            IBlobStorage storage,
             CancellationToken stoppingToken = default)
         {
-            string value = null;
+            var filePath = StoragePath.Combine(options.StorageDir, platform, $"foundryvtt-{version}.{platform.GetFileExtension()}");
+
+            // Do not check hash.
+            if (await storage.ExistsAsync(filePath, stoppingToken))
+            {
+                logger.LogInformation("Release file already exists at: {path}", filePath);
+                throw new InvalidOperationException("File exists");
+            }
+
+            // Download.
+            await using var fileStream = await DownloadReleaseAsync(client, version, platform, stoppingToken);
+
+            // Upload with timeout set (linked to the stoppingToken).
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            timeoutCts.CancelAfter(options.UploadTimeout * 1000);
+
+            try
+            {
+                await storage.WriteAsync(filePath, fileStream, false, timeoutCts.Token);
+                logger.LogInformation("Uploaded the release file to: {file}", filePath);
+            }
+            catch (OperationCanceledException oce)
+            {
+                logger.LogError(oce, "Failed to upload files to the storage due to timeout for: {file}", filePath);
+            }
+        }
+
+        private async Task<string> FetchCsrfTokensAsync(IBrowsingContext context, CancellationToken stoppingToken = default)
+        {
+            IHtmlInputElement element;
 
             try
             {
                 using var doc = await context.OpenAsync("https://foundryvtt.com", stoppingToken);
-
-                var inputElement = doc.QuerySelector("input[name=\"csrfmiddlewaretoken\"]");
-                if (inputElement is IHtmlInputElement input)
-                {
-                    value = input.Value;
-                }
+                element = (IHtmlInputElement) doc.QuerySelector("input[name=\"csrfmiddlewaretoken\"]");
             }
             catch (Exception e)
             {
-                logger.LogError(e, "Failed to fetch CSRF token.");
+                logger.LogError(e, "Failed to select the CSRF control");
+                throw new InvalidOperationException("Failed to get specified HTML value", e);
             }
 
-            return value;
+            logger.LogInformation("Homepage loaded and CSRF control selected");
+            return element.Value;
         }
 
-        private async Task<string> LoginAsync(IBrowsingContext context,
-            string csrfToken,
-            CancellationToken stoppingToken = default)
+        private async Task<string> LoginAsync(IBrowsingContext context, string csrfToken, CancellationToken stoppingToken = default)
         {
+            logger.LogInformation("Logging in as: {username}", options.Username);
+
             // Construct POST body content.
-            var loginBody =
-                $"csrfmiddlewaretoken={UrlEncoder.Default.Encode(csrfToken)}&login_redirect={UrlEncoder.Default.Encode("/")}" +
-                $"&login_username={UrlEncoder.Default.Encode(options.Username)}&login_password={UrlEncoder.Default.Encode(options.Password)}&login=";
-            var bodyBytes = Encoding.UTF8.GetBytes(loginBody);
-            await using var bodyStream = new MemoryStream(bodyBytes);
+            var loginBody = $"csrfmiddlewaretoken={UrlEncoder.Default.Encode(csrfToken)}&login_redirect={UrlEncoder.Default.Encode("/")}" +
+                            $"&login_username={UrlEncoder.Default.Encode(options.Username)}&login_password={UrlEncoder.Default.Encode(options.Password)}&login=";
+            await using var bodyStream = new MemoryStream(Encoding.UTF8.GetBytes(loginBody));
 
             var loginRequest = new DocumentRequest(Url.Create("https://foundryvtt.com/auth/login"))
             {
@@ -227,43 +199,81 @@ namespace AstralProjection
             try
             {
                 using var doc = await context.OpenAsync(loginRequest, stoppingToken);
-                return context.GetCookie(Url.Create("https://foundryvtt.com"));
             }
             catch (Exception e)
             {
-                logger.LogError(e, $"Failed to login account '{options.Username}'.");
+                logger.LogError(e, "Failed to POST login request with: {token}", csrfToken);
+                throw new ArgumentException("Login failed", nameof(csrfToken));
             }
 
-            return null;
+            var cookies = context.GetCookie(Url.Create("https://foundryvtt.com"));
+
+            // ReSharper disable once StringLiteralTypo
+            if (string.IsNullOrEmpty(cookies) || !cookies.Contains("sessionid", StringComparison.OrdinalIgnoreCase))
+            {
+                // ReSharper disable once StringLiteralTypo
+                logger.LogError("Failed to get sessionid in: {cookies}", cookies);
+                throw new InvalidOperationException("Cookies content is invalid");
+            }
+
+            logger.LogInformation("Logged in as: {username}", options.Username);
+            return cookies;
         }
 
-        private async Task<string[]> GetVersionsAsync(IBrowsingContext context,
-            CancellationToken stoppingToken = default)
+        private async Task<string[]> GetVersionsAsync(IBrowsingContext context, CancellationToken stoppingToken = default)
         {
+            string[] versions;
+            var trimLen = "https://foundryvtt.com/releases/".Length;
+
             try
             {
                 using var doc = await context.OpenAsync("https://foundryvtt.com/releases/", stoppingToken);
-
-                var trimLen = "https://foundryvtt.com/releases/".Length;
-                var refs = doc.QuerySelectorAll("#releases-directory li.article .article-title a")
-                    .OfType<IHtmlAnchorElement>().Select(e => e.Href.Substring(trimLen))
+                versions = doc.QuerySelectorAll("#releases-directory li.article .article-title a")
+                    .OfType<IHtmlAnchorElement>().Select(e => e.Href[trimLen..])
                     .Where(x => !string.IsNullOrEmpty(x))
+                    .Where(x => x.VersionGte(options.Minimum))
                     .ToArray();
-
-                return refs;
             }
             catch (Exception e)
             {
-                logger.LogError(e, "Failed to fetch versions list.");
+                logger.LogError(e, "Failed to fetch versions list in the release page as: {username}", options.Username);
+                throw new InvalidOperationException("Invalid HTML query selection", e);
             }
 
-            return null;
+            if (!versions.Any())
+            {
+                logger.LogError("No available versions in the release page from: {minVer}", options.Minimum);
+                throw new InvalidOperationException("Array count is invalid");
+            }
+
+            logger.LogInformation("Got available versions in total: {count}", versions.Length);
+            return versions;
         }
 
-        private async Task<Stream> DownloadAsync(HttpClient client,
-            string version,
-            string platform,
-            CancellationToken stoppingToken = default)
+        private HttpClient ConfigureDownloadClient(string cookies)
+        {
+            // Set cookies for download.
+            var cookieCon = new CookieContainer();
+            foreach (var c in cookies.Split(';'))
+            {
+                cookieCon.SetCookies(new Uri("https://foundryvtt.com"), c);
+            }
+
+            // To download manually, needs to prevent auto redirection.
+            // The handler is disposed when the client is disposed.
+            var handler = new HttpClientHandler { CookieContainer = cookieCon, AllowAutoRedirect = false };
+
+            var client = new HttpClient(handler) { BaseAddress = new Uri("https://foundryvtt.com") };
+            client.DefaultRequestHeaders.Referrer = new Uri("https://foundryvtt.com");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0");
+            client.DefaultRequestHeaders.TryAddWithoutValidation("DNT", "1");
+
+            logger.LogTrace("Ready to download Foundry VTT releases with: {cookies}", cookies);
+
+            return client;
+        }
+
+        private async Task<Stream> DownloadReleaseAsync(HttpClient client, string version, string platform, CancellationToken stoppingToken = default)
         {
             var downloadUrl = $"/releases/download?version={version}&platform={platform}";
             using var resp = await client.GetAsync(downloadUrl, stoppingToken);
@@ -271,37 +281,42 @@ namespace AstralProjection
             var sc = (int) resp.StatusCode;
             if (sc < 300 || sc >= 400)
             {
-                logger.LogError($"Failed to parse '{downloadUrl}' with status code {resp.StatusCode}.");
+                logger.LogError("Failed to parse URL: {url} with {code}", downloadUrl, resp.StatusCode);
                 return null;
             }
 
             // Redirect to download.
             var dlUri = resp.Headers.Location;
-            if (!Uri.IsWellFormedUriString(dlUri.ToString(), UriKind.Absolute))
+            if (dlUri == null || !Uri.IsWellFormedUriString(dlUri.ToString(), UriKind.Absolute))
             {
-                logger.LogError($"Failed to redirect to '{dlUri}'.");
+                logger.LogError("Failed to redirect to: {uri}", dlUri);
                 return null;
             }
 
+            var tmpFileName = Path.GetTempFileName();
+            var fileStream = File.Open(tmpFileName, FileMode.OpenOrCreate, FileAccess.ReadWrite);
+
             try
             {
-                var tempFilePath = Path.GetTempFileName();
-                var fileStream = File.Open(tempFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite);
-
-                // Copy without memory footprint.
-                using var dlResp = await client.GetAsync(dlUri, HttpCompletionOption.ResponseHeadersRead, stoppingToken);
-
-                await using var stream = await dlResp.Content.ReadAsStreamAsync();
+                using var dlResponse = await client.GetAsync(dlUri, HttpCompletionOption.ResponseHeadersRead, stoppingToken);
+                await using var stream = await dlResponse.Content.ReadAsStreamAsync(stoppingToken);
                 await stream.CopyToAsync(fileStream, stoppingToken);
-
-                return fileStream;
             }
             catch (Exception e)
             {
-                logger.LogError(e, $"Failed to download {platform}/{version} to local temp file.");
+                await fileStream.DisposeAsync();
+                logger.LogError(e, "Failed to download to local temp file for: {ver} of {plat}", version, platform);
             }
 
-            return null;
+            // 1M as a check.
+            if (fileStream == null || fileStream.Length < 1024 * 1024)
+            {
+                logger.LogError("Failed to download the release file from: {url}", downloadUrl);
+                throw new InvalidOperationException("FileStream is invalid");
+            }
+
+            logger.LogTrace("Release file downloaded successfully from: {url}", downloadUrl);
+            return fileStream;
         }
     }
 }
