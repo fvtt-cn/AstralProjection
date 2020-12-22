@@ -123,31 +123,34 @@ namespace AstralProjection
             var manifestUpdated = await UpdateLocalManifestAsync(file, localJson, remoteJson);
             var alreadyExists = await storage.ExistsAsync(astralMfName, stoppingToken);
 
-            if (manifestUpdated || !alreadyExists)
+            if (!manifestUpdated && alreadyExists)
             {
-                // If the manifest changed/updated or does not exist in the folder, upload it to the cloud.
-                remoteJson["manifest"] = astralMfUrl;
-                remoteJson["download"] = astralDlUrl;
-                var astralJsonString = remoteJson.ToString();
+                logger.LogTrace("Manifest is up to date and files already exist on the cloud: {title} from {file}", title, file.FullName);
+                return;
+            }
 
-                var manifestType = astralMfName.EndsWith("system.json", StringComparison.OrdinalIgnoreCase) ? "system" : "module";
-                await using var zipStream = await DownloadZipAsync(remoteDlUrl, astralJsonString, manifestType, httpClient, stoppingToken);
+            // If the manifest changed/updated or does not exist in the folder, upload it to the cloud.
+            remoteJson["manifest"] = astralMfUrl;
+            remoteJson["download"] = astralDlUrl;
+            var astralJsonString = remoteJson.ToString();
 
-                // Upload with timeout set (linked to the stoppingToken).
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-                timeoutCts.CancelAfter(options.UploadTimeout * 1000);
+            var manifestType = astralMfName.EndsWith("system.json", StringComparison.OrdinalIgnoreCase) ? "system" : "module";
+            await using var zipStream = await DownloadZipAsync(remoteDlUrl, astralJsonString, manifestType, httpClient, stoppingToken);
 
-                try
-                {
-                    await storage.WriteAsync(astralDlName, zipStream, false, timeoutCts.Token);
-                    await storage.WriteTextAsync(astralMfName, astralJsonString, Encoding.UTF8, timeoutCts.Token);
+            // Upload with timeout set (linked to the stoppingToken).
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            timeoutCts.CancelAfter(options.UploadTimeout * 1000);
 
-                    logger.LogInformation("Updated the {type} named {title} from: {file}", manifestType, title, file.FullName);
-                }
-                catch (OperationCanceledException oce)
-                {
-                    logger.LogError(oce, "Failed to upload files to the storage due to timeout for: {file}", file.FullName);
-                }
+            try
+            {
+                await storage.WriteAsync(astralDlName, zipStream, false, timeoutCts.Token);
+                await storage.WriteTextAsync(astralMfName, astralJsonString, Encoding.UTF8, timeoutCts.Token);
+
+                logger.LogInformation("Updated the {type} named {title} from: {file}", manifestType, title, file.FullName);
+            }
+            catch (OperationCanceledException oce)
+            {
+                logger.LogError(oce, "Failed to upload files to the storage due to timeout for: {file}", file.FullName);
             }
         }
 
