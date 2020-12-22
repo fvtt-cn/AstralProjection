@@ -5,7 +5,6 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json.Linq;
 using Storage.Net;
-using Storage.Net.Blobs;
 using System;
 using System.Collections.Generic;
 
@@ -59,7 +58,8 @@ namespace AstralProjection.Services
                         options.ServiceUrl);
                 }
 
-                throw new ArgumentException("Can not initialize S3 storage", nameof(setupAction));
+                // Critical error and it will shutdown all workers.
+                throw new ArgumentException("Unable to initialize S3 storage", nameof(setupAction));
             });
 
             return services;

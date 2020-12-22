@@ -51,24 +51,27 @@ namespace AstralProjection
 
             if (string.IsNullOrEmpty(options.Username) || string.IsNullOrEmpty(options.Password) || !options.Minimum.IsVersion() || !platforms.Any())
             {
-                logger.LogError("Configuration is invalid for: {worker}", nameof(ForgeWorker));
+                logger.LogCritical("Configuration is invalid for: {worker}", nameof(ForgeWorker));
                 throw new ArgumentException("Platform or version is invalid", nameof(options));
             }
 
-            logger.LogInformation("Scheduled to refresh from {version} for platforms: {plats}", options.Minimum, string.Join(", ", platforms));
+            logger.LogInformation("Scheduled to refresh from {version} for platforms: {plats} on {schedule}", options.Minimum,
+                string.Join(", ", platforms), options.Schedule);
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             // Run on startup.
-            await ProcessAsync(stoppingToken);
+            await ProcessAsync(stoppingToken)
+                .ContinueWith(t => logger.LogError(t.Exception, "Execution interrupted"), TaskContinuationOptions.OnlyOnFaulted);
 
             do
             {
                 if (DateTime.Now > nextRunDate)
                 {
                     logger.LogInformation("Worker schedule triggered: {worker}", nameof(ForgeWorker));
-                    await ProcessAsync(stoppingToken);
+                    await ProcessAsync(stoppingToken)
+                        .ContinueWith(t => logger.LogError(t.Exception, "Execution interrupted"), TaskContinuationOptions.OnlyOnFaulted);
 
                     nextRunDate = schedule.GetNextOccurrence(DateTime.Now);
                 }
@@ -80,18 +83,30 @@ namespace AstralProjection
 
         private async Task ProcessAsync(CancellationToken stoppingToken = default)
         {
+            using var context = BrowsingContext.New(Configuration.Default.WithDefaultCookies().WithDefaultLoader());
+            string cookies;
+            string[] versions;
+
             // Try to login.
-            var config = Configuration.Default.WithDefaultCookies().WithDefaultLoader();
-            using var context = BrowsingContext.New(config);
+            try
+            {
+                var csrfToken = await FetchCsrfTokensAsync(context, stoppingToken);
+                cookies = await LoginAsync(context, csrfToken, stoppingToken);
+                versions = await GetVersionsAsync(context, stoppingToken);
+            }
+            catch (Exception e)
+            {
+                logger.LogError(e, "Failed to login Foundry VTT website with: {username}", options.Username);
+                return;
+            }
 
-            var csrfToken = await FetchCsrfTokensAsync(context, stoppingToken);
-            var cookies = await LoginAsync(context, csrfToken, stoppingToken);
-
-            // Get current versions list by extracting release notes page.
-            var versions = await GetVersionsAsync(context, stoppingToken);
-
-            // Set cookies for download.
             using var client = ConfigureDownloadClient(cookies);
+
+            if (client is null)
+            {
+                logger.LogError("Failed to initialize HTTP client for download with: {cookies}", cookies);
+                return;
+            }
 
             // Check file exists and download & upload to S3.
             using var scope = provider.CreateScope();
@@ -132,7 +147,7 @@ namespace AstralProjection
             // Do not check hash.
             if (await storage.ExistsAsync(filePath, stoppingToken))
             {
-                logger.LogInformation("Release file already exists at: {path}", filePath);
+                logger.LogTrace("Release file already exists at: {path}", filePath);
                 // Skip if duplicated.
                 return;
             }
@@ -244,6 +259,7 @@ namespace AstralProjection
             if (!versions.Any())
             {
                 logger.LogError("No available versions in the release page from: {minVer}", options.Minimum);
+                // Skip.
                 // throw new InvalidOperationException("Array count is invalid");
             }
 
@@ -255,9 +271,17 @@ namespace AstralProjection
         {
             // Set cookies for download.
             var cookieCon = new CookieContainer();
-            foreach (var c in cookies.Split(';'))
+            foreach (var c in cookies.Split(';', StringSplitOptions.RemoveEmptyEntries))
             {
-                cookieCon.SetCookies(new Uri("https://foundryvtt.com"), c);
+                try
+                {
+                    cookieCon.SetCookies(new Uri("https://foundryvtt.com"), c);
+                }
+                catch (CookieException ce)
+                {
+                    logger.LogError(ce, "Failed to set cookie for Foundry VTT website with: {cookie}", c);
+                    return null;
+                }
             }
 
             // To download manually, needs to prevent auto redirection.
@@ -270,7 +294,6 @@ namespace AstralProjection
             client.DefaultRequestHeaders.TryAddWithoutValidation("DNT", "1");
 
             logger.LogTrace("Ready to download Foundry VTT releases with: {cookies}", cookies);
-
             return client;
         }
 

@@ -45,24 +45,27 @@ namespace AstralProjection
             // Configure.
             if (string.IsNullOrEmpty(options.Dir))
             {
-                logger.LogError("Configuration is invalid for: {worker}", nameof(AstralWorker));
+                logger.LogCritical("Configuration is invalid for: {worker}", nameof(AstralWorker));
                 throw new ArgumentException("Directory name is null or empty", nameof(options));
             }
 
             Directory.CreateDirectory(options.Dir);
+            logger.LogInformation("Scheduled to refresh module/system in: {dir} on {schedule}", options.Dir, options.Schedule);
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             // Run on startup.
-            await ProcessAsync(stoppingToken);
+            await ProcessAsync(stoppingToken)
+                .ContinueWith(t => logger.LogError(t.Exception, "Execution interrupted"), TaskContinuationOptions.OnlyOnFaulted);
 
             do
             {
                 if (DateTime.Now > nextRunDate)
                 {
                     logger.LogInformation("Worker schedule triggered: {worker}", nameof(AstralWorker));
-                    await ProcessAsync(stoppingToken);
+                    await ProcessAsync(stoppingToken)
+                        .ContinueWith(t => logger.LogError(t.Exception, "Execution interrupted"), TaskContinuationOptions.OnlyOnFaulted);
 
                     nextRunDate = schedule.GetNextOccurrence(DateTime.Now);
                 }
