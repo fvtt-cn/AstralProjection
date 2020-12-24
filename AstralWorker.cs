@@ -280,7 +280,7 @@ namespace AstralProjection
 
                 try
                 {
-                    using var textReader = new StreamReader(entryStream);
+                    using var textReader = new StreamReader(entryStream, leaveOpen: true);
                     using var jsonReader = new JsonTextReader(textReader);
                     var entryJson = await JObject.LoadAsync(jsonReader, stoppingToken);
                     entryName = entryJson.Value<string>("name");
