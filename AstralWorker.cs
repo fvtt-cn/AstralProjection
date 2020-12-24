@@ -86,6 +86,7 @@ namespace AstralProjection
             var dir = new DirectoryInfo(options.Dir);
             var files = dir.GetFiles("*.json", SearchOption.AllDirectories);
 
+            // Sequential because the most time-consuming part is network I/O.
             foreach (var file in files)
             {
                 if (stoppingToken.IsCancellationRequested)

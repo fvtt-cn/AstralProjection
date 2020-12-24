@@ -12,8 +12,8 @@
         public string Schedule { get; set; } = "30 */12 * * *";
 
         /// <summary>
-        /// Upload timeout in seconds, 60s by default.
+        /// Upload timeout in seconds, 180s by default.
         /// </summary>
-        public int UploadTimeout { get; set; } = 60;
+        public int UploadTimeout { get; set; } = 180;
     }
 }
