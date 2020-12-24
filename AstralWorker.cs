@@ -94,7 +94,7 @@ namespace AstralProjection
                 if (stoppingToken.IsCancellationRequested)
                 {
                     logger.LogWarning("Cancellation token requested, stopping...");
-                    break;
+                    return;
                 }
 
                 try
