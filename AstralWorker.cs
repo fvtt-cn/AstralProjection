@@ -133,9 +133,10 @@ namespace AstralProjection
             remoteJson["manifest"] = astralMfUrl;
             remoteJson["download"] = astralDlUrl;
             var astralJsonString = remoteJson.ToString();
+            var moduleName = remoteJson.Value<string>("name");
 
             var manifestType = astralMfName.EndsWith("system.json", StringComparison.OrdinalIgnoreCase) ? "system" : "module";
-            await using var zipStream = await DownloadZipAsync(remoteDlUrl, astralJsonString, manifestType, httpClient, stoppingToken);
+            await using var zipStream = await DownloadZipAsync(remoteDlUrl, astralJsonString, manifestType, moduleName, httpClient, stoppingToken);
 
             // Upload with timeout set (linked to the stoppingToken).
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
@@ -255,6 +256,7 @@ namespace AstralProjection
         private async Task<Stream> DownloadZipAsync(string downloadUrl,
             string astralJsonString,
             string manifestType,
+            string moduleName,
             HttpClient client,
             CancellationToken stoppingToken = default)
         {
@@ -274,6 +276,27 @@ namespace AstralProjection
             foreach (var entry in zip.Entries.Where(e => e.Name.Equals(manifestName)))
             {
                 await using var entryStream = entry.Open();
+                string entryName;
+
+                try
+                {
+                    using var textReader = new StreamReader(entryStream);
+                    using var jsonReader = new JsonTextReader(textReader);
+                    var entryJson = await JObject.LoadAsync(jsonReader, stoppingToken);
+                    entryName = entryJson.Value<string>("name");
+                }
+                catch (JsonReaderException jre)
+                {
+                    logger.LogWarning(jre, "Manifest file found in zip but unable to convert it: {entry} of {module}", entry.FullName, moduleName);
+                    continue;
+                }
+
+                if (entryName == null || !moduleName.Equals(entryName, StringComparison.Ordinal))
+                {
+                    logger.LogTrace("Manifest file found in zip but its name is not equal: {name} of {path}", entryName, entry.FullName);
+                    continue;
+                }
+
                 entryStream.SetLength(0);
 
                 await using var writer = new StreamWriter(entryStream);
