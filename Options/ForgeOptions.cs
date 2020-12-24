@@ -25,5 +25,7 @@
         /// Upload timeout in seconds, 300s by default.
         /// </summary>
         public int UploadTimeout { get; set; } = 300;
+
+        public bool TrimLinuxPackage { get; set; } = true;
     }
 }

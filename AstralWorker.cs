@@ -50,12 +50,12 @@ namespace AstralProjection
             }
 
             Directory.CreateDirectory(options.Dir);
-            logger.LogInformation("Scheduled to refresh module/system in: {dir} on {schedule}", options.Dir, options.Schedule);
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             // Run on startup.
+            logger.LogInformation("Worker scheduled to refresh module/system in: {dir} on {schedule}", options.Dir, options.Schedule);
             await ProcessAsync(stoppingToken)
                 .ContinueWith(t => logger.LogError(t.Exception, "Execution interrupted"), TaskContinuationOptions.OnlyOnFaulted);
 
@@ -68,6 +68,8 @@ namespace AstralProjection
                         .ContinueWith(t => logger.LogError(t.Exception, "Execution interrupted"), TaskContinuationOptions.OnlyOnFaulted);
 
                     nextRunDate = schedule.GetNextOccurrence(DateTime.Now);
+                    logger.LogInformation("Worker process completed: {worker}", nameof(AstralWorker));
+                    logger.LogInformation("Worker next execution should start at: {date}", nextRunDate);
                 }
 
                 // Wait 5s to check.
@@ -104,8 +106,6 @@ namespace AstralProjection
                     logger.LogError(ex, "Failed to process: {file}", file.FullName);
                 }
             }
-
-            logger.LogInformation("Worker process completed: {worker}", nameof(AstralWorker));
         }
 
         private async Task ProcessFileAsync(FileInfo file, HttpClient httpClient, IBlobStorage storage, CancellationToken stoppingToken = default)

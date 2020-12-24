@@ -10,6 +10,7 @@ using Storage.Net;
 using Storage.Net.Blobs;
 using System;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -54,14 +55,13 @@ namespace AstralProjection
                 logger.LogCritical("Configuration is invalid for: {worker}", nameof(ForgeWorker));
                 throw new ArgumentException("Platform or version is invalid", nameof(options));
             }
-
-            logger.LogInformation("Scheduled to refresh from {version} for platforms: {plats} on {schedule}", options.Minimum,
-                string.Join(", ", platforms), options.Schedule);
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             // Run on startup.
+            logger.LogInformation("Worker scheduled to refresh from {version} for platforms: {plats} on {schedule}", options.Minimum,
+                string.Join(", ", platforms), options.Schedule);
             await ProcessAsync(stoppingToken)
                 .ContinueWith(t => logger.LogError(t.Exception, "Execution interrupted"), TaskContinuationOptions.OnlyOnFaulted);
 
@@ -74,6 +74,8 @@ namespace AstralProjection
                         .ContinueWith(t => logger.LogError(t.Exception, "Execution interrupted"), TaskContinuationOptions.OnlyOnFaulted);
 
                     nextRunDate = schedule.GetNextOccurrence(DateTime.Now);
+                    logger.LogInformation("Worker process completed: {worker}", nameof(ForgeWorker));
+                    logger.LogInformation("Worker next execution should start at: {date}", nextRunDate);
                 }
 
                 // Wait 5s to check.
@@ -132,8 +134,6 @@ namespace AstralProjection
                     }
                 }
             }
-
-            logger.LogInformation("Worker process completed: {worker}", nameof(ForgeWorker));
         }
 
         private async Task ProcessReleaseAsync(string platform,
@@ -332,6 +332,11 @@ namespace AstralProjection
                 logger.LogError(e, "Failed to download to local temp file for: {ver} of {plat}", version, platform);
             }
 
+            if (options.TrimLinuxPackage && platform.Equals("linux") && await TrimLinuxPackageAsync(fileStream, stoppingToken))
+            {
+                logger.LogInformation("Linux package trimmed unnecessary files for: {ver}", version);
+            }
+
             // 1M as a check.
             if (fileStream == null || fileStream.Length < 1024 * 1024)
             {
@@ -341,6 +346,24 @@ namespace AstralProjection
 
             logger.LogTrace("Release file downloaded successfully from: {url}", downloadUrl);
             return fileStream;
+        }
+
+        private async Task<bool> TrimLinuxPackageAsync(Stream zipStream, CancellationToken stoppingToken = default)
+        {
+            // Open the zip file.
+            using var zip = new ZipArchive(zipStream, ZipArchiveMode.Update, true);
+            var trimmed = false;
+
+            foreach (var entry in zip.Entries.Where(e => !e.FullName.StartsWith("resources/")))
+            {
+                entry.Delete();
+                trimmed = true;
+                logger.LogTrace("Linux package trimmed file at: {entry}", entry.FullName);
+            }
+
+            // Flush to the temp file.
+            await zipStream.FlushAsync(stoppingToken);
+            return trimmed;
         }
     }
 }
