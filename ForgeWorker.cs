@@ -354,7 +354,7 @@ namespace AstralProjection
             using var zip = new ZipArchive(zipStream, ZipArchiveMode.Update, true);
             var trimmed = false;
 
-            foreach (var entry in zip.Entries.Where(e => !e.FullName.StartsWith("resources/")))
+            foreach (var entry in zip.Entries.Where(e => !e.FullName.StartsWith("resources/")).ToList())
             {
                 entry.Delete();
                 trimmed = true;
