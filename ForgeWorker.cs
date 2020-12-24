@@ -334,7 +334,10 @@ namespace AstralProjection
 
             if (options.TrimLinuxPackage && platform.Equals("linux") && await TrimLinuxPackageAsync(fileStream, stoppingToken))
             {
-                logger.LogInformation("Linux package trimmed unnecessary files for: {ver}", version);
+                var length = fileStream.Length / (1024 * 1024);
+                await fileStream.DisposeAsync();
+                fileStream = File.Open(tmpFileName, FileMode.OpenOrCreate, FileAccess.ReadWrite);
+                logger.LogInformation("Linux package trimmed unnecessary files for: {ver}, {oldSize}M => {newSize}M", version, length, fileStream.Length);
             }
 
             // 1M as a check.
