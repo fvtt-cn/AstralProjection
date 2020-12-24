@@ -85,13 +85,14 @@ namespace AstralProjection
 
         private async Task ProcessAsync(CancellationToken stoppingToken = default)
         {
-            using var context = BrowsingContext.New(Configuration.Default.WithDefaultCookies().WithDefaultLoader());
             string cookies;
             string[] versions;
 
             // Try to login.
             try
             {
+                using var context = BrowsingContext.New(Configuration.Default.WithDefaultCookies().WithDefaultLoader());
+
                 var csrfToken = await FetchCsrfTokensAsync(context, stoppingToken);
                 cookies = await LoginAsync(context, csrfToken, stoppingToken);
                 versions = await GetVersionsAsync(context, stoppingToken);
@@ -332,12 +333,11 @@ namespace AstralProjection
                 logger.LogError(e, "Failed to download to local temp file for: {ver} of {plat}", version, platform);
             }
 
+            var size = fileStream.Length / (1024 * 1024);
             if (options.TrimLinuxPackage && platform.Equals("linux") && await TrimLinuxPackageAsync(fileStream, stoppingToken))
             {
-                var length = fileStream.Length / (1024 * 1024);
-                await fileStream.DisposeAsync();
-                fileStream = File.Open(tmpFileName, FileMode.OpenOrCreate, FileAccess.ReadWrite);
-                logger.LogInformation("Linux package trimmed unnecessary files for: {ver}, {oldSize}M => {newSize}M", version, length, fileStream.Length);
+                var newSize = fileStream.Length / (1024 * 1024);
+                logger.LogInformation("Linux package trimmed unnecessary files for: {ver}, {oldSize}M => {newSize}M", version, size, newSize);
             }
 
             // 1M as a check.
@@ -351,7 +351,7 @@ namespace AstralProjection
             return fileStream;
         }
 
-        private async Task<bool> TrimLinuxPackageAsync(Stream zipStream, CancellationToken stoppingToken = default)
+        private Task<bool> TrimLinuxPackageAsync(Stream zipStream, CancellationToken stoppingToken = default)
         {
             // Open the zip file.
             using var zip = new ZipArchive(zipStream, ZipArchiveMode.Update, true);
@@ -362,11 +362,14 @@ namespace AstralProjection
                 entry.Delete();
                 trimmed = true;
                 logger.LogTrace("Linux package trimmed file at: {entry}", entry.FullName);
+
+                if (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
             }
 
-            // Flush to the temp file.
-            await zipStream.FlushAsync(stoppingToken);
-            return trimmed;
+            return Task.FromResult(trimmed);
         }
     }
 }
