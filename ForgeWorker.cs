@@ -62,16 +62,14 @@ namespace AstralProjection
             // Run on startup.
             logger.LogInformation("Worker scheduled to refresh from {version} for platforms: {plats} on {schedule}", options.Minimum,
                 string.Join(", ", platforms), options.Schedule);
-            await ProcessAsync(stoppingToken)
-                .ContinueWith(t => logger.LogError(t.Exception, "Execution interrupted"), TaskContinuationOptions.OnlyOnFaulted);
+            await ProcessAsync(stoppingToken);
 
             do
             {
                 if (DateTime.Now > nextRunDate)
                 {
                     logger.LogInformation("Worker schedule triggered: {worker}", nameof(ForgeWorker));
-                    await ProcessAsync(stoppingToken)
-                        .ContinueWith(t => logger.LogError(t.Exception, "Execution interrupted"), TaskContinuationOptions.OnlyOnFaulted);
+                    await ProcessAsync(stoppingToken);
 
                     nextRunDate = schedule.GetNextOccurrence(DateTime.Now);
                     logger.LogInformation("Worker process completed: {worker}", nameof(ForgeWorker));

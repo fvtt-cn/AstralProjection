@@ -56,16 +56,14 @@ namespace AstralProjection
         {
             // Run on startup.
             logger.LogInformation("Worker scheduled to refresh module/system in: {dir} on {schedule}", options.Dir, options.Schedule);
-            await ProcessAsync(stoppingToken)
-                .ContinueWith(t => logger.LogError(t.Exception, "Execution interrupted"), TaskContinuationOptions.OnlyOnFaulted);
+            await ProcessAsync(stoppingToken);
 
             do
             {
                 if (DateTime.Now > nextRunDate)
                 {
                     logger.LogInformation("Worker schedule triggered: {worker}", nameof(AstralWorker));
-                    await ProcessAsync(stoppingToken)
-                        .ContinueWith(t => logger.LogError(t.Exception, "Execution interrupted"), TaskContinuationOptions.OnlyOnFaulted);
+                    await ProcessAsync(stoppingToken);
 
                     nextRunDate = schedule.GetNextOccurrence(DateTime.Now);
                     logger.LogInformation("Worker process completed: {worker}", nameof(AstralWorker));
@@ -79,14 +77,15 @@ namespace AstralProjection
 
         private async Task ProcessAsync(CancellationToken stoppingToken = default)
         {
+            // Search all json recursively.
+            var dir = new DirectoryInfo(options.Dir);
+            var files = dir.GetFiles("*.json", SearchOption.AllDirectories);
+            logger.LogInformation("Got manifest files in total: {count}", files.Length);
+
             // Initialize HttpClient and BlobStorage when processing.
             using var httpClient = new HttpClient();
             using var scope = provider.CreateScope();
             using var storage = scope.ServiceProvider.GetRequiredService<IBlobStorage>();
-
-            // Search all json recursively.
-            var dir = new DirectoryInfo(options.Dir);
-            var files = dir.GetFiles("*.json", SearchOption.AllDirectories);
 
             // Sequential because the most time-consuming part is network I/O.
             foreach (var file in files)
@@ -121,20 +120,21 @@ namespace AstralProjection
             var astralDlUrl = ZString.Concat(options.Prefix, astralDlName);
 
             // Replace local manifest with the new manifest if updated.
-            var manifestUpdated = await UpdateLocalManifestAsync(file, localJson, remoteJson);
+            var manifestToUpdate = !JToken.DeepEquals(localJson, remoteJson);
             var alreadyExists = await storage.ExistsAsync(astralMfName, stoppingToken);
+            var astralJson = remoteJson.DeepClone();
 
-            if (!manifestUpdated && alreadyExists)
+            if (!manifestToUpdate && alreadyExists)
             {
                 logger.LogTrace("Manifest is up to date and files already exist on the cloud: {title} from {file}", title, file.FullName);
                 return;
             }
 
             // If the manifest changed/updated or does not exist in the folder, upload it to the cloud.
-            remoteJson["manifest"] = astralMfUrl;
-            remoteJson["download"] = astralDlUrl;
-            var astralJsonString = remoteJson.ToString();
-            var moduleName = remoteJson.Value<string>("name");
+            astralJson["manifest"] = astralMfUrl;
+            astralJson["download"] = astralDlUrl;
+            var astralJsonString = astralJson.ToString();
+            var moduleName = astralJson.Value<string>("name");
 
             var manifestType = astralMfName.EndsWith("system.json", StringComparison.OrdinalIgnoreCase) ? "system" : "module";
             await using var zipStream = await DownloadZipAsync(remoteDlUrl, astralJsonString, manifestType, moduleName, httpClient, stoppingToken);
@@ -147,6 +147,11 @@ namespace AstralProjection
             {
                 await storage.WriteAsync(astralDlName, zipStream, false, timeoutCts.Token);
                 await storage.WriteTextAsync(astralMfName, astralJsonString, Encoding.UTF8, timeoutCts.Token);
+                // Update local manifest only on storage updated.
+                if (manifestToUpdate)
+                {
+                    await UpdateLocalManifestAsync(file, remoteJson);
+                }
 
                 logger.LogInformation("Updated the {type} named {title} from: {file}", manifestType, title, file.FullName);
             }
@@ -242,16 +247,10 @@ namespace AstralProjection
             throw new ArgumentException("URL is invalid", nameof(manifestUrl));
         }
 
-        private async Task<bool> UpdateLocalManifestAsync(FileInfo file, JObject local, JObject remote)
+        private async Task UpdateLocalManifestAsync(FileInfo file, JObject remote)
         {
-            if (JToken.DeepEquals(local, remote))
-            {
-                return false;
-            }
-
             logger.LogInformation("Local manifest updated for: {file}", file.FullName);
             await File.WriteAllTextAsync(file.FullName, remote.ToString());
-            return true;
         }
 
         private async Task<Stream> DownloadZipAsync(string downloadUrl,
