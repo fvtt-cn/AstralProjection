@@ -33,16 +33,28 @@ namespace AstralProjection
                 {
                     // Inject worker options directly instead of IOptions.
                     var astral = hostContext.Configuration.GetSection("Astral").Get<AstralOptions>();
-                    services.AddSingleton(astral);
+                    if (astral is not null)
+                    {
+                        services.AddSingleton(astral);
+                        services.AddHostedService<AstralWorker>();
+                    }
+
                     var forge = hostContext.Configuration.GetSection("Forge").Get<ForgeOptions>();
-                    services.AddSingleton(forge);
+                    if (forge is not null)
+                    {
+                        services.AddSingleton(forge);
+                        services.AddHostedService<ForgeWorker>();
+                    }
+
+                    var arcaneEye = hostContext.Configuration.GetSection("ArcaneEye").Get<ArcaneEyeOptions>();
+                    if (arcaneEye is not null)
+                    {
+                        services.AddSingleton(arcaneEye);
+                        services.AddHostedService<ArcaneEyeWorker>();
+                    }
 
                     // Inject dependency.
                     services.AddQCloudStorage(s3 => hostContext.Configuration.GetSection("S3").Bind(s3));
-
-                    // Add workers.
-                    services.AddHostedService<AstralWorker>();
-                    services.AddHostedService<ForgeWorker>();
                 });
 
         private static string ColorizeLogLevel(LogLevel level) => level switch
