@@ -238,14 +238,16 @@ namespace AstralProjection
         private async Task<string[]> GetVersionsAsync(IBrowsingContext context, CancellationToken stoppingToken = default)
         {
             string[] versions;
-            var trimLen = "https://foundryvtt.com/releases/".Length;
+            const string releasePrefix = "Release ";
 
             try
             {
                 using var doc = await context.OpenAsync("https://foundryvtt.com/releases/", stoppingToken);
                 versions = doc.QuerySelectorAll("#releases-directory li.article .article-title a")
-                    .OfType<IHtmlAnchorElement>().Select(e => e.Href[trimLen..])
+                    .OfType<IHtmlAnchorElement>().Select(e => e.TextContent)
                     .Where(x => !string.IsNullOrEmpty(x))
+                    .Where(x => x.Contains(releasePrefix, StringComparison.OrdinalIgnoreCase))
+                    .Select(x => x[releasePrefix.Length..])
                     .Where(x => x.VersionGte(options.Minimum))
                     .ToArray();
             }
