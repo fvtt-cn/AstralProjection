@@ -268,6 +268,13 @@ namespace AstralProjection
             await using var dlStream = await client.GetStreamAsync(downloadUrl, stoppingToken);
             await dlStream.CopyToAsync(zipStream, stoppingToken);
 
+            // Validate the size. IOException if it cannot fetch the file size.
+            if (zipStream.Length > options.SizeLimit)
+            {
+                logger.LogError("Zip file is downloaded but its size is too big (in bytes): {size} > {limit}", zipStream.Length, options.SizeLimit);
+                throw new ArgumentOutOfRangeException(nameof(zipStream.Length), "Download URL is invalid");
+            }
+
             // Open the zip file.
             using var zip = new ZipArchive(zipStream, ZipArchiveMode.Update, true);
             var replaced = false;
@@ -314,7 +321,7 @@ namespace AstralProjection
             if (!zipStream.CanRead)
             {
                 logger.LogError("Failed to download the zip from: {url}", downloadUrl);
-                throw new ArgumentException("Download URL is invalid", downloadUrl);
+                throw new ArgumentException("Download URL is invalid", nameof(downloadUrl));
             }
 
             logger.LogTrace("Zip file is updated and ready to be uploaded for: {url}", downloadUrl);
