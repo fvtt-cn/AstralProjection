@@ -1,14 +1,4 @@
-﻿using AngleSharp;
-using AngleSharp.Html.Dom;
-using AngleSharp.Io;
-using AstralProjection.Options;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using NCrontab;
-using Storage.Net;
-using Storage.Net.Blobs;
-using System;
+﻿using System;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -18,14 +8,25 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Threading;
 using System.Threading.Tasks;
+using AngleSharp;
+using AngleSharp.Html.Dom;
+using AngleSharp.Io;
+using AstralProjection.Options;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using NCrontab;
+using Storage.Net;
+using Storage.Net.Blobs;
+using HttpMethod = AngleSharp.Io.HttpMethod;
 
 namespace AstralProjection
 {
     public class ForgeWorker : BackgroundService
     {
-        private readonly IServiceProvider provider;
-        private readonly ForgeOptions options;
         private readonly ILogger logger;
+        private readonly ForgeOptions options;
+        private readonly IServiceProvider provider;
 
         private readonly CrontabSchedule schedule;
         private DateTime nextRunDate;
@@ -50,7 +51,8 @@ namespace AstralProjection
             platforms = options.Platforms ?? GlobalSettings.SUPPORTED_PLATFORMS;
             platforms = platforms.Where(x => GlobalSettings.SUPPORTED_PLATFORMS.Contains(x)).ToArray();
 
-            if (string.IsNullOrEmpty(options.Username) || string.IsNullOrEmpty(options.Password) || !options.Minimum.IsVersion() || !platforms.Any())
+            if (string.IsNullOrEmpty(options.Username) || string.IsNullOrEmpty(options.Password) ||
+                !options.Minimum.IsVersion() || !platforms.Any())
             {
                 logger.LogCritical("Configuration is invalid for: {worker}", nameof(ForgeWorker));
                 throw new ArgumentException("Platform or version is invalid", nameof(options));
@@ -60,8 +62,8 @@ namespace AstralProjection
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             // Run on startup.
-            logger.LogInformation("Worker scheduled to refresh from {version} for platforms: {plats} on {schedule}", options.Minimum,
-                string.Join(", ", platforms), options.Schedule);
+            logger.LogInformation("Worker scheduled to refresh from {version} for platforms: {plats} on {schedule}",
+                options.Minimum, string.Join(", ", platforms), options.Schedule);
             await ProcessAsync(stoppingToken);
 
             do
@@ -135,13 +137,11 @@ namespace AstralProjection
             }
         }
 
-        private async Task ProcessReleaseAsync(string platform,
-            string version,
-            HttpClient client,
-            IBlobStorage storage,
+        private async Task ProcessReleaseAsync(string platform, string version, HttpClient client, IBlobStorage storage,
             CancellationToken stoppingToken = default)
         {
-            var filePath = StoragePath.Combine(options.StorageDir, platform, $"foundryvtt-{version}.{platform.GetFileExtension()}");
+            var filePath = StoragePath.Combine(options.StorageDir, platform,
+                $"foundryvtt-{version}.{platform.GetFileExtension()}");
 
             // Do not check hash.
             if (await storage.ExistsAsync(filePath, stoppingToken))
@@ -169,14 +169,15 @@ namespace AstralProjection
             }
         }
 
-        private async Task<string> FetchCsrfTokensAsync(IBrowsingContext context, CancellationToken stoppingToken = default)
+        private async Task<string> FetchCsrfTokensAsync(IBrowsingContext context,
+            CancellationToken stoppingToken = default)
         {
             IHtmlInputElement element;
 
             try
             {
                 using var doc = await context.OpenAsync("https://foundryvtt.com", stoppingToken);
-                element = (IHtmlInputElement) doc.QuerySelector("input[name=\"csrfmiddlewaretoken\"]");
+                element = (IHtmlInputElement)doc.QuerySelector("input[name=\"csrfmiddlewaretoken\"]");
             }
             catch (Exception e)
             {
@@ -188,18 +189,20 @@ namespace AstralProjection
             return element.Value;
         }
 
-        private async Task<string> LoginAsync(IBrowsingContext context, string csrfToken, CancellationToken stoppingToken = default)
+        private async Task<string> LoginAsync(IBrowsingContext context, string csrfToken,
+            CancellationToken stoppingToken = default)
         {
             logger.LogInformation("Logging in as: {username}", options.Username);
 
             // Construct POST body content.
-            var loginBody = $"csrfmiddlewaretoken={UrlEncoder.Default.Encode(csrfToken)}&login_redirect={UrlEncoder.Default.Encode("/")}" +
-                            $"&login_username={UrlEncoder.Default.Encode(options.Username)}&login_password={UrlEncoder.Default.Encode(options.Password)}&login=";
+            var loginBody =
+                $"csrfmiddlewaretoken={UrlEncoder.Default.Encode(csrfToken)}&login_redirect={UrlEncoder.Default.Encode("/")}" +
+                $"&login_username={UrlEncoder.Default.Encode(options.Username)}&login_password={UrlEncoder.Default.Encode(options.Password)}&login=";
             await using var bodyStream = new MemoryStream(Encoding.UTF8.GetBytes(loginBody));
 
             var loginRequest = new DocumentRequest(Url.Create("https://foundryvtt.com/auth/login"))
             {
-                Method = AngleSharp.Io.HttpMethod.Post,
+                Method = HttpMethod.Post,
                 Headers =
                 {
                     { "DNT", "1" },
@@ -235,7 +238,8 @@ namespace AstralProjection
             return cookies;
         }
 
-        private async Task<string[]> GetVersionsAsync(IBrowsingContext context, CancellationToken stoppingToken = default)
+        private async Task<string[]> GetVersionsAsync(IBrowsingContext context,
+            CancellationToken stoppingToken = default)
         {
             string[] versions;
             const string releasePrefix = "Release ";
@@ -244,7 +248,8 @@ namespace AstralProjection
             {
                 using var doc = await context.OpenAsync("https://foundryvtt.com/releases/", stoppingToken);
                 versions = doc.QuerySelectorAll("#releases-directory li.article .article-title a")
-                    .OfType<IHtmlAnchorElement>().Select(e => e.TextContent)
+                    .OfType<IHtmlAnchorElement>()
+                    .Select(e => e.TextContent)
                     .Where(x => !string.IsNullOrEmpty(x))
                     .Where(x => x.Contains(releasePrefix, StringComparison.OrdinalIgnoreCase))
                     .Select(x => x[releasePrefix.Length..])
@@ -253,7 +258,8 @@ namespace AstralProjection
             }
             catch (Exception e)
             {
-                logger.LogError(e, "Failed to fetch versions list in the release page as: {username}", options.Username);
+                logger.LogError(e, "Failed to fetch versions list in the release page as: {username}",
+                    options.Username);
                 throw new InvalidOperationException("Invalid HTML query selection", e);
             }
 
@@ -298,12 +304,13 @@ namespace AstralProjection
             return client;
         }
 
-        private async Task<Stream> DownloadReleaseAsync(HttpClient client, string version, string platform, CancellationToken stoppingToken = default)
+        private async Task<Stream> DownloadReleaseAsync(HttpClient client, string version, string platform,
+            CancellationToken stoppingToken = default)
         {
             var downloadUrl = $"/releases/download?version={version}&platform={platform}";
             using var resp = await client.GetAsync(downloadUrl, stoppingToken);
 
-            var sc = (int) resp.StatusCode;
+            var sc = (int)resp.StatusCode;
             if (sc < 300 || sc >= 400)
             {
                 logger.LogError("Failed to parse URL: {url} with {code}", downloadUrl, resp.StatusCode);
@@ -323,7 +330,8 @@ namespace AstralProjection
 
             try
             {
-                using var dlResponse = await client.GetAsync(dlUri, HttpCompletionOption.ResponseHeadersRead, stoppingToken);
+                using var dlResponse =
+                    await client.GetAsync(dlUri, HttpCompletionOption.ResponseHeadersRead, stoppingToken);
                 await using var stream = await dlResponse.Content.ReadAsStreamAsync(stoppingToken);
                 await stream.CopyToAsync(fileStream, stoppingToken);
             }
@@ -334,10 +342,12 @@ namespace AstralProjection
             }
 
             var size = fileStream.Length / (1024 * 1024);
-            if (options.TrimLinuxPackage && platform.Equals("linux") && await TrimLinuxPackageAsync(fileStream, stoppingToken))
+            if (options.TrimLinuxPackage && platform.Equals("linux") &&
+                await TrimLinuxPackageAsync(fileStream, stoppingToken))
             {
                 var newSize = fileStream.Length / (1024 * 1024);
-                logger.LogInformation("Linux package trimmed unnecessary files for: {ver}, {oldSize}M => {newSize}M", version, size, newSize);
+                logger.LogInformation("Linux package trimmed unnecessary files for: {ver}, {oldSize}M => {newSize}M",
+                    version, size, newSize);
             }
 
             // 1M as a check.

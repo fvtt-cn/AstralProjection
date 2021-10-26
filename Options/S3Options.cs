@@ -13,7 +13,7 @@
         public string ServiceUrl { get; set; }
 
         /// <summary>
-        /// In seconds.
+        ///     In seconds.
         /// </summary>
         public int Timeout { get; set; }
     }

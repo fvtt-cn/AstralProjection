@@ -1,23 +1,23 @@
-﻿using AstralProjection.Options;
+﻿using System;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using AstralProjection.Options;
 using Cysharp.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NCrontab;
 using Storage.Net.Blobs;
-using System;
-using System.IO;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace AstralProjection
 {
     public class ArcaneEyeWorker : BackgroundService
     {
-        private readonly IServiceProvider provider;
-        private readonly ArcaneEyeOptions options;
         private readonly ILogger logger;
+        private readonly ArcaneEyeOptions options;
+        private readonly IServiceProvider provider;
 
         private readonly CrontabSchedule schedule;
         private DateTime nextRunDate;
@@ -82,7 +82,8 @@ namespace AstralProjection
             }
         }
 
-        private async Task GenerateHtmlAsync(Stream stream, IBlobStorage storage, CancellationToken stoppingToken = default)
+        private async Task GenerateHtmlAsync(Stream stream, IBlobStorage storage,
+            CancellationToken stoppingToken = default)
         {
             using var sb = ZString.CreateUtf8StringBuilder();
             sb.Append(options.HtmlHeader);
@@ -94,7 +95,8 @@ namespace AstralProjection
             }, stoppingToken);
             logger.LogInformation("Got manifest files in total: {count}", manifests.Count);
 
-            foreach (var module in manifests.Where(m => m is not null && m.Name.Equals("module.json", StringComparison.OrdinalIgnoreCase)))
+            foreach (var module in manifests.Where(m =>
+                m is not null && m.Name.Equals("module.json", StringComparison.OrdinalIgnoreCase)))
             {
                 logger.LogTrace("Append module manifest link with: {path}", module.FullPath);
                 sb.AppendFormat(options.LinkTemplate, options.Prefix, module.FullPath.TrimStart('/'));
@@ -102,7 +104,8 @@ namespace AstralProjection
 
             // Horizontal rule?
 
-            foreach (var system in manifests.Where(m => m is not null && m.Name.Equals("system.json", StringComparison.OrdinalIgnoreCase)))
+            foreach (var system in manifests.Where(m =>
+                m is not null && m.Name.Equals("system.json", StringComparison.OrdinalIgnoreCase)))
             {
                 logger.LogTrace("Append system manifest link with: {path}", system.FullPath);
                 sb.AppendFormat(options.LinkTemplate, options.Prefix, system.FullPath.TrimStart('/'));

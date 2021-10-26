@@ -24,9 +24,9 @@ namespace AstralProjection
                     logging.AddZLoggerConsole(options =>
                     {
                         var prefixFormat = ZString.PrepareUtf8<string, string, string>("{0} | [{1}] <{2}> ");
-                        options.PrefixFormatter = (writer, info) =>
-                            prefixFormat.FormatTo(ref writer, info.Timestamp.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss"),
-                                ColorizeLogLevel(info.LogLevel), info.CategoryName);
+                        options.PrefixFormatter = (writer, info) => prefixFormat.FormatTo(ref writer,
+                            info.Timestamp.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss"), ColorizeLogLevel(info.LogLevel),
+                            info.CategoryName);
                     });
                 })
                 .ConfigureServices((hostContext, services) =>

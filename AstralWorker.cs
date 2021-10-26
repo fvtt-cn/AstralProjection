@@ -1,12 +1,3 @@
-using AstralProjection.Options;
-using Cysharp.Text;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using NCrontab;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-using Storage.Net.Blobs;
 using System;
 using System.IO;
 using System.IO.Compression;
@@ -16,14 +7,23 @@ using System.Security;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using AstralProjection.Options;
+using Cysharp.Text;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using NCrontab;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using Storage.Net.Blobs;
 
 namespace AstralProjection
 {
     public class AstralWorker : BackgroundService
     {
-        private readonly IServiceProvider provider;
-        private readonly AstralOptions options;
         private readonly ILogger logger;
+        private readonly AstralOptions options;
+        private readonly IServiceProvider provider;
 
         private readonly CrontabSchedule schedule;
         private DateTime nextRunDate;
@@ -55,7 +55,8 @@ namespace AstralProjection
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             // Run on startup.
-            logger.LogInformation("Worker scheduled to refresh module/system in: {dir} on {schedule}", options.Dir, options.Schedule);
+            logger.LogInformation("Worker scheduled to refresh module/system in: {dir} on {schedule}", options.Dir,
+                options.Schedule);
             await ProcessAsync(stoppingToken);
 
             do
@@ -84,8 +85,6 @@ namespace AstralProjection
 
             // Initialize HttpClient and BlobStorage when processing.
             using var httpClient = new HttpClient();
-            using var scope = provider.CreateScope();
-            using var storage = scope.ServiceProvider.GetRequiredService<IBlobStorage>();
 
             // Sequential because the most time-consuming part is network I/O.
             foreach (var file in files)
@@ -98,6 +97,10 @@ namespace AstralProjection
 
                 try
                 {
+                    // Create IBlobStorage.
+                    using var scope = provider.CreateScope();
+                    using var storage = scope.ServiceProvider.GetRequiredService<IBlobStorage>();
+
                     await ProcessFileAsync(file, httpClient, storage, stoppingToken);
                 }
                 catch (Exception ex)
@@ -107,10 +110,12 @@ namespace AstralProjection
             }
         }
 
-        private async Task ProcessFileAsync(FileInfo file, HttpClient httpClient, IBlobStorage storage, CancellationToken stoppingToken = default)
+        private async Task ProcessFileAsync(FileInfo file, HttpClient httpClient, IBlobStorage storage,
+            CancellationToken stoppingToken = default)
         {
             var (localJson, localMfUrl, _) = await ReadLocalManifestAsync(file, stoppingToken);
-            var (remoteJson, remoteMfUrl, remoteDlUrl) = await ReadRemoteManifestAsync(localMfUrl, httpClient, stoppingToken);
+            var (remoteJson, remoteMfUrl, remoteDlUrl) =
+                await ReadRemoteManifestAsync(localMfUrl, httpClient, stoppingToken);
             var title = remoteJson.Value<string>("title");
 
             // Truncate protocol and query string.
@@ -126,7 +131,8 @@ namespace AstralProjection
 
             if (!manifestToUpdate && alreadyExists)
             {
-                logger.LogTrace("Manifest is up to date and files already exist on the cloud: {title} from {file}", title, file.FullName);
+                logger.LogTrace("Manifest is up to date and files already exist on the cloud: {title} from {file}",
+                    title, file.FullName);
                 return;
             }
 
@@ -136,8 +142,11 @@ namespace AstralProjection
             var astralJsonString = astralJson.ToString();
             var moduleName = astralJson.Value<string>("name");
 
-            var manifestType = astralMfName.EndsWith("system.json", StringComparison.OrdinalIgnoreCase) ? "system" : "module";
-            await using var zipStream = await DownloadZipAsync(remoteDlUrl, astralJsonString, manifestType, moduleName, httpClient, stoppingToken);
+            var manifestType = astralMfName.EndsWith("system.json", StringComparison.OrdinalIgnoreCase)
+                ? "system"
+                : "module";
+            await using var zipStream = await DownloadZipAsync(remoteDlUrl, astralJsonString, manifestType, moduleName,
+                httpClient, stoppingToken);
 
             // Upload with timeout set (linked to the stoppingToken).
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
@@ -153,7 +162,8 @@ namespace AstralProjection
                     await UpdateLocalManifestAsync(file, remoteJson);
                 }
 
-                logger.LogInformation("Updated the {type} named {title} from: {file}", manifestType, title, file.FullName);
+                logger.LogInformation("Updated the {type} named {title} from: {file}", manifestType, title,
+                    file.FullName);
             }
             catch (OperationCanceledException oce)
             {
@@ -202,9 +212,7 @@ namespace AstralProjection
         }
 
         private async Task<(JObject Json, string ManifestUrl, string DownloadUrl)> ReadRemoteManifestAsync(
-            string manifestUrl,
-            HttpClient client,
-            CancellationToken stoppingToken = default)
+            string manifestUrl, HttpClient client, CancellationToken stoppingToken = default)
         {
             try
             {
@@ -256,12 +264,8 @@ namespace AstralProjection
             await File.WriteAllTextAsync(file.FullName, remote.ToString());
         }
 
-        private async Task<Stream> DownloadZipAsync(string downloadUrl,
-            string astralJsonString,
-            string manifestType,
-            string moduleName,
-            HttpClient client,
-            CancellationToken stoppingToken = default)
+        private async Task<Stream> DownloadZipAsync(string downloadUrl, string astralJsonString, string manifestType,
+            string moduleName, HttpClient client, CancellationToken stoppingToken = default)
         {
             // Temp zip stream for later using, do not dispose.
             var tmpZipName = Path.GetTempFileName();
@@ -274,7 +278,8 @@ namespace AstralProjection
             // Validate the size. IOException if it cannot fetch the file size.
             if (zipStream.Length > options.SizeLimit)
             {
-                logger.LogError("Zip file is downloaded but its size is too big (in bytes): {size} > {limit}", zipStream.Length, options.SizeLimit);
+                logger.LogError("Zip file is downloaded but its size is too big (in bytes): {size} > {limit}",
+                    zipStream.Length, options.SizeLimit);
                 throw new ArgumentOutOfRangeException(nameof(zipStream.Length), "Download URL is invalid");
             }
 
@@ -297,13 +302,15 @@ namespace AstralProjection
                 }
                 catch (JsonReaderException jre)
                 {
-                    logger.LogWarning(jre, "Manifest file found in zip but unable to convert it: {entry} of {module}", entry.FullName, moduleName);
+                    logger.LogWarning(jre, "Manifest file found in zip but unable to convert it: {entry} of {module}",
+                        entry.FullName, moduleName);
                     continue;
                 }
 
                 if (entryName == null || !moduleName.Equals(entryName, StringComparison.Ordinal))
                 {
-                    logger.LogTrace("Manifest file found in zip but its name is not equal: {name} of {path}", entryName, entry.FullName);
+                    logger.LogTrace("Manifest file found in zip but its name is not equal: {name} of {path}", entryName,
+                        entry.FullName);
                     continue;
                 }
 

@@ -1,18 +1,19 @@
-﻿using AstralProjection.Options;
+﻿using System;
+using System.Collections.Generic;
+using AstralProjection.Options;
 using COSSTS;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json.Linq;
 using Storage.Net;
-using System;
-using System.Collections.Generic;
 
 namespace AstralProjection.Services
 {
     public static class BlobStorageServiceExtensions
     {
-        public static IServiceCollection AddQCloudStorage(this IServiceCollection services, Action<S3Options> setupAction)
+        public static IServiceCollection AddQCloudStorage(this IServiceCollection services,
+            Action<S3Options> setupAction)
         {
             if (services == null)
             {
@@ -33,7 +34,7 @@ namespace AstralProjection.Services
                 var options = s3Options.Value;
 
                 // QCloud only as for now.
-                var allowActions = new [] { "*" };
+                var allowActions = new[] { "*" };
                 var dict = new Dictionary<string, object>
                 {
                     { "bucket", options.Bucket },
@@ -49,13 +50,9 @@ namespace AstralProjection.Services
                 if (result["Credentials"] is JToken credentials)
                 {
                     // S3.
-                    return StorageFactory.Blobs.AwsS3(
-                        credentials.Value<string>("TmpSecretId"),
-                        credentials.Value<string>("TmpSecretKey"),
-                        credentials.Value<string>("Token"),
-                        options.Bucket,
-                        null,
-                        options.ServiceUrl);
+                    return StorageFactory.Blobs.AwsS3(credentials.Value<string>("TmpSecretId"),
+                        credentials.Value<string>("TmpSecretKey"), credentials.Value<string>("Token"), options.Bucket,
+                        null, options.ServiceUrl);
                 }
 
                 // Critical error and it will shutdown all workers.
