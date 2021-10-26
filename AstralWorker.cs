@@ -237,7 +237,10 @@ namespace AstralProjection
         {
             if (Uri.TryCreate(manifestUrl, UriKind.Absolute, out var astralMfUri))
             {
-                var astralMfName = astralMfUri.GetComponents(UriComponents.Host | UriComponents.Port | UriComponents.Path, UriFormat.UriEscaped);
+                // Unescape the stupid AF `%2F` between org and repo from the GitLab API. 
+                var astralMfName =
+                    astralMfUri.GetComponents(UriComponents.Host | UriComponents.Port | UriComponents.Path,
+                        UriFormat.Unescaped);
                 var astralDlName = ZString.Concat(astralMfName, ".zip");
 
                 return (astralMfName, astralDlName);
