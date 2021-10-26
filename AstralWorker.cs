@@ -280,6 +280,8 @@ namespace AstralProjection
             {
                 logger.LogError("Zip file is downloaded but its size is too big (in bytes): {size} > {limit}",
                     zipStream.Length, options.SizeLimit);
+                await zipStream.DisposeAsync();
+                File.Delete(tmpZipName);
                 throw new ArgumentOutOfRangeException(nameof(zipStream.Length), "Download URL is invalid");
             }
 
