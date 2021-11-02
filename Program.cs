@@ -46,15 +46,9 @@ namespace AstralProjection
                         services.AddHostedService<ForgeWorker>();
                     }
 
-                    var arcaneEye = hostContext.Configuration.GetSection("ArcaneEye").Get<ArcaneEyeOptions>();
-                    if (arcaneEye is not null)
-                    {
-                        services.AddSingleton(arcaneEye);
-                        services.AddHostedService<ArcaneEyeWorker>();
-                    }
-
                     // Inject dependency.
                     services.AddQCloudStorage(s3 => hostContext.Configuration.GetSection("S3").Bind(s3));
+                    services.AddAzureBlobStorage(s3 => hostContext.Configuration.GetSection("AzureBlob").Bind(s3));
                 });
 
         private static string ColorizeLogLevel(LogLevel level) => level switch

@@ -20,5 +20,7 @@
         ///     File size limit in bytes, 100MiB by default.
         /// </summary>
         public long SizeLimit { get; set; } = 100 * 1024 * 1024;
+
+        public string ListPath { get; set; } = "list.json";
     }
 }

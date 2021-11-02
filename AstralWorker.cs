@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -16,6 +17,7 @@ using NCrontab;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Storage.Net.Blobs;
+using Storage.Net.Microsoft.Azure.Storage.Blobs;
 
 namespace AstralProjection
 {
@@ -85,6 +87,7 @@ namespace AstralProjection
 
             // Initialize HttpClient and BlobStorage when processing.
             using var httpClient = new HttpClient();
+            var list = new List<ApiManifest>();
 
             // Sequential because the most time-consuming part is network I/O.
             foreach (var file in files)
@@ -101,22 +104,30 @@ namespace AstralProjection
                     using var scope = provider.CreateScope();
                     using var storage = scope.ServiceProvider.GetRequiredService<IBlobStorage>();
 
-                    await ProcessFileAsync(file, httpClient, storage, stoppingToken);
+                    await ProcessFileAsync(file, httpClient, storage, list, stoppingToken);
                 }
                 catch (Exception ex)
                 {
                     logger.LogError(ex, "Failed to process: {file}", file.FullName);
                 }
             }
+
+            // Generate index json.
+            using var indexScope = provider.CreateScope();
+            using var indexStorage = indexScope.ServiceProvider.GetRequiredService<IAzureBlobStorage>();
+
+            // Upload.
+            var indexJson = JsonConvert.SerializeObject(list);
+            await indexStorage.WriteTextAsync(options.ListPath, indexJson, Encoding.UTF8, stoppingToken);
+            logger.LogInformation("Generated index json: {path}", options.ListPath);
         }
 
         private async Task ProcessFileAsync(FileInfo file, HttpClient httpClient, IBlobStorage storage,
-            CancellationToken stoppingToken = default)
+            List<ApiManifest> apiManifests, CancellationToken stoppingToken = default)
         {
             var (localJson, localMfUrl, _) = await ReadLocalManifestAsync(file, stoppingToken);
             var (remoteJson, remoteMfUrl, remoteDlUrl) =
                 await ReadRemoteManifestAsync(localMfUrl, httpClient, stoppingToken);
-            var title = remoteJson.Value<string>("title");
 
             // Truncate protocol and query string.
             var (astralMfName, astralDlName) = GenerateAstralFullName(remoteMfUrl);
@@ -124,15 +135,29 @@ namespace AstralProjection
             var astralMfUrl = ZString.Concat(options.Prefix, astralMfName);
             var astralDlUrl = ZString.Concat(options.Prefix, astralDlName);
 
+            // Data about this manifest.
+            var moduleName = remoteJson.Value<string>("name");
+            var moduleTitle = remoteJson.Value<string>("title");
+            var manifestType = astralMfName.EndsWith("system.json", StringComparison.OrdinalIgnoreCase)
+                ? "system"
+                : "module";
+
             // Replace local manifest with the new manifest if updated.
             var manifestToUpdate = !JToken.DeepEquals(localJson, remoteJson);
             var alreadyExists = await storage.ExistsAsync(astralMfName, stoppingToken);
             var astralJson = remoteJson.DeepClone();
 
+            // Api Manifest for search/filter.
+            var apiManifest = new ApiManifest(moduleName, moduleTitle, manifestType,
+                astralJson.Value<string>("description") ?? "", astralJson.Value<string>("url") ?? "",
+                astralJson.Value<string>("version") ?? "", astralJson.Value<string>("minimumCoreVersion") ?? "",
+                astralJson.Value<string>("compatibleCoreVersion") ?? "", remoteMfUrl, astralMfUrl);
+
             if (!manifestToUpdate && alreadyExists)
             {
+                apiManifests.Add(apiManifest);
                 logger.LogTrace("Manifest is up to date and files already exist on the cloud: {title} from {file}",
-                    title, file.FullName);
+                    moduleTitle, file.FullName);
                 return;
             }
 
@@ -140,11 +165,7 @@ namespace AstralProjection
             astralJson["manifest"] = astralMfUrl;
             astralJson["download"] = astralDlUrl;
             var astralJsonString = astralJson.ToString();
-            var moduleName = astralJson.Value<string>("name");
 
-            var manifestType = astralMfName.EndsWith("system.json", StringComparison.OrdinalIgnoreCase)
-                ? "system"
-                : "module";
             await using var zipStream = await DownloadZipAsync(remoteDlUrl, astralJsonString, manifestType, moduleName,
                 httpClient, stoppingToken);
 
@@ -162,7 +183,8 @@ namespace AstralProjection
                     await UpdateLocalManifestAsync(file, remoteJson);
                 }
 
-                logger.LogInformation("Updated the {type} named {title} from: {file}", manifestType, title,
+                apiManifests.Add(apiManifest);
+                logger.LogInformation("Updated the {type} named {title} from: {file}", manifestType, moduleTitle,
                     file.FullName);
             }
             catch (OperationCanceledException oce)
@@ -356,5 +378,8 @@ namespace AstralProjection
             logger.LogTrace("Extract URLs for the manifest: {manifest}, {download}", manifestUrl, downloadUrl);
             return (json, manifestUrl, downloadUrl);
         }
+
+        private sealed record ApiManifest(string Name, string Title, string Type, string Description, string ProjectUrl,
+            string Version, string MinimalCoreVersion, string CompatCoreVersion, string ManifestUrl, string AccelUrl);
     }
 }

@@ -12,6 +12,33 @@ namespace AstralProjection.Services
 {
     public static class BlobStorageServiceExtensions
     {
+        public static IServiceCollection AddAzureBlobStorage(this IServiceCollection services,
+            Action<AzureBlobOptions> setupAction)
+        {
+            if (services == null)
+            {
+                throw new ArgumentNullException(nameof(services));
+            }
+
+            if (setupAction == null)
+            {
+                throw new ArgumentNullException(nameof(setupAction));
+            }
+
+            services.AddOptions();
+            services.Configure(setupAction);
+
+            services.TryAddScoped(provider =>
+            {
+                var azureOpts = provider.GetRequiredService<IOptions<AzureBlobOptions>>();
+                var options = azureOpts.Value;
+
+                return StorageFactory.Blobs.AzureBlobStorageWithSharedKey(options.AccountName, options.Key);
+            });
+
+            return services;
+        }
+
         public static IServiceCollection AddQCloudStorage(this IServiceCollection services,
             Action<S3Options> setupAction)
         {
